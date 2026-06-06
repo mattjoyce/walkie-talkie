@@ -57,10 +57,6 @@ export interface PollResponse {
   messages: Message[];
 }
 
-export interface UsersResponse {
-  users: string[];
-}
-
 export interface ErrorResponse {
   error: string;
 }

@@ -14,6 +14,12 @@ interface HubResponse<T = unknown> {
   data: T;
 }
 
+export interface HubUser {
+  name: string;
+  online: boolean;
+  role: "agent" | "bridge";
+}
+
 export class HubClient {
   private baseUrl: URL;
 
@@ -195,8 +201,8 @@ export class HubClient {
     return res.data;
   }
 
-  async users(token: string): Promise<string[]> {
-    const res = await this.request<{ users: string[] }>({
+  async users(token: string): Promise<HubUser[]> {
+    const res = await this.request<{ users: HubUser[] }>({
       method: "GET",
       path: "/users",
       token,

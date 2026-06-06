@@ -30607,7 +30607,8 @@ IMPORTANT: Reply in the same channel you received the message on. Use the channe
       }
       try {
         const [users, channels] = await Promise.all([client.users(currentToken), client.listChannels(currentToken)]);
-        const userText = users.length > 0 ? `Connected users: ${users.join(", ")}` : "No users connected.";
+        const connectedUsers = users.filter((u) => u.online).map((u) => u.name);
+        const userText = connectedUsers.length > 0 ? `Connected users: ${connectedUsers.join(", ")}` : "No users connected.";
         const channelText = channels.length > 0 ? `Channels: ${channels.map((c) => `${c.name} (${c.memberCount} members)`).join(", ")}` : "No channels.";
         return {
           content: [
