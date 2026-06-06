@@ -30096,6 +30096,21 @@ var EMPTY_COMPLETION_RESULT = {
   }
 };
 
+// contract/dist/index.js
+var RADIO_KILLED_PREFIX = "RADIO_KILLED: ";
+function formatControl(prefix, payload) {
+  return `${prefix}${payload}`;
+}
+function isControl(content, prefix) {
+  return content.startsWith(prefix);
+}
+var POLL_HOLD_MS = 36e5;
+var POLL_CLIENT_MARGIN_MS = 6e4;
+var POLL_CLIENT_TIMEOUT_MS = POLL_HOLD_MS + POLL_CLIENT_MARGIN_MS;
+var STALE_GRACE_MS = 3e4;
+var REGISTER_GRACE_MARGIN_MS = 5e3;
+var REGISTER_GRACE_RETRY_MS = STALE_GRACE_MS + REGISTER_GRACE_MARGIN_MS;
+
 // mcp-server/src/client.ts
 import http from "node:http";
 import https from "node:https";
@@ -30201,8 +30216,7 @@ var HubClient = class {
       method: "GET",
       path: "/poll",
       token,
-      timeoutMs: 366e4
-      // 1 hour + 60s margin
+      timeoutMs: POLL_CLIENT_TIMEOUT_MS
     });
     if (res.status === 204) return null;
     if (res.status !== 200) {
@@ -30306,6 +30320,10 @@ var HubClient = class {
 };
 
 // mcp-server/src/tools.ts
+var RADIO_KILLED_NOTICE = formatControl(
+  RADIO_KILLED_PREFIX,
+  "You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately."
+);
 var MIME_TYPES = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -30528,7 +30546,7 @@ function createMcpServer(hubUrl2, joinTok) {
             content: [{ type: "text", text: "No new messages." }]
           };
         }
-        const killed = result.messages.find((m) => m.content.startsWith("RADIO_KILLED:"));
+        const killed = result.messages.find((m) => isControl(m.content, RADIO_KILLED_PREFIX));
         if (killed) {
           currentToken = null;
           currentName = null;
@@ -30536,7 +30554,7 @@ function createMcpServer(hubUrl2, joinTok) {
             content: [
               {
                 type: "text",
-                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately."
+                text: RADIO_KILLED_NOTICE
               }
             ],
             isError: true
@@ -30575,7 +30593,7 @@ IMPORTANT: Reply in the same channel you received the message on. Use the channe
             content: [
               {
                 type: "text",
-                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately."
+                text: RADIO_KILLED_NOTICE
               }
             ],
             isError: true
@@ -30606,7 +30624,7 @@ IMPORTANT: Reply in the same channel you received the message on. Use the channe
             content: [{ type: "text", text: "No new messages (poll timed out). Try again." }]
           };
         }
-        const killed = result.messages.find((m) => m.content.startsWith("RADIO_KILLED:"));
+        const killed = result.messages.find((m) => isControl(m.content, RADIO_KILLED_PREFIX));
         if (killed) {
           currentToken = null;
           currentName = null;
@@ -30614,7 +30632,7 @@ IMPORTANT: Reply in the same channel you received the message on. Use the channe
             content: [
               {
                 type: "text",
-                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately."
+                text: RADIO_KILLED_NOTICE
               }
             ],
             isError: true
@@ -30654,7 +30672,7 @@ IMPORTANT: Reply in the same channel you received the message on. Use the channe
             content: [
               {
                 type: "text",
-                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately."
+                text: RADIO_KILLED_NOTICE
               }
             ],
             isError: true

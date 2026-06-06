@@ -16,6 +16,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "@walkie-talkie/contract": "*",
     "better-sqlite3": "^12.6.2"
   }
 }

@@ -1,8 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { POLL_HOLD_MS } from "@walkie-talkie/contract";
 import { peekQueue } from "./router.js";
 import type { Message } from "./types.js";
-
-const POLL_TIMEOUT_MS = 3_600_000; // 1 hour
 
 type Waiter = {
   userName: string;
@@ -48,16 +47,16 @@ export function addPoll(userName: string, req: IncomingMessage, res: ServerRespo
   waiters.set(userName, {
     userName,
     startedAt,
-    expiresAt: startedAt + POLL_TIMEOUT_MS,
+    expiresAt: startedAt + POLL_HOLD_MS,
   });
 
   const timer = setTimeout(() => {
     waiters.delete(userName);
     connections.delete(userName);
-    console.log(`[poll-timeout] ${userName} (no messages after ${POLL_TIMEOUT_MS / 1000}s)`);
+    console.log(`[poll-timeout] ${userName} (no messages after ${POLL_HOLD_MS / 1000}s)`);
     res.writeHead(204);
     res.end();
-  }, POLL_TIMEOUT_MS);
+  }, POLL_HOLD_MS);
 
   connections.set(userName, { res, timer });
 

@@ -18,7 +18,10 @@ MAX_RETRIES=3
 retry_count=0
 
 while true; do
-  # Long-poll with 1 hour timeout (3660s)
+  # Long-poll timeout, in seconds. Must exceed the hub's POLL_HOLD_MS (3600s) so
+  # the hub, not the client, ends the poll. This shell client cannot import the
+  # shared contract; this value mirrors POLL_CLIENT_TIMEOUT_MS in
+  # @walkie-talkie/contract (3_660_000 ms = 3660s) — keep them in lockstep.
   response=$(curl -s -w "\n%{http_code}" -H "Authorization: Bearer $TOKEN" \
     --max-time 3660 "$HUB_URL/poll" 2>/dev/null) || {
     retry_count=$((retry_count + 1))

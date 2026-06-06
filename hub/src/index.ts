@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { formatControl, RADIO_KILLED_PREFIX } from "@walkie-talkie/contract";
 import { getRegisteredUsers, loadUsersFromDB } from "./auth.js";
 import { loadMembershipFromDB } from "./channels.js";
 import { initDB } from "./db.js";
@@ -57,7 +58,7 @@ function handleShutdown(exitCode = 0): void {
       id: randomUUID(),
       from: "system",
       to: name,
-      content: "RADIO_KILLED: Hub is shutting down.",
+      content: formatControl(RADIO_KILLED_PREFIX, "Hub is shutting down."),
       channel: "#all",
       timestamp: Date.now(),
     });

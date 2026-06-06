@@ -1,23 +1,22 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { UserRole } from "@walkie-talkie/contract";
 
-export interface MessageImage {
-  data: string; // base64 (no data-URI prefix)
-  mimeType: string; // e.g. "image/png"
-}
+// Wire types live in the shared contract package; re-export the ones hub
+// modules consume so existing `./types.js` imports keep resolving.
+export type {
+  AckRequest,
+  ErrorResponse,
+  Message,
+  MessageImage,
+  PollResponse,
+  RegisterRequest,
+  RegisterResponse,
+  SendRequest,
+  SendResponse,
+  UserRole,
+} from "@walkie-talkie/contract";
 
-export interface Message {
-  id: string;
-  deliveryId?: string;
-  from: string;
-  to: string;
-  content: string;
-  channel: string;
-  timestamp: number;
-  image?: MessageImage;
-}
-
-export type UserRole = "agent" | "bridge";
-
+// Hub-internal shapes (never sent verbatim over the wire).
 export interface User {
   name: string;
   token: string;
@@ -26,45 +25,10 @@ export interface User {
   epoch: number;
 }
 
-export interface RegisterRequest {
-  name: string;
-  oldToken?: string;
-  role?: UserRole;
-}
-
-export interface RegisterResponse {
-  token: string;
-  name: string;
-}
-
-export interface SendRequest {
-  to: string;
-  content: string;
-  channel?: string;
-  image?: MessageImage;
-}
-
 export interface Channel {
   name: string;
   createdBy: string;
   createdAt: number;
-}
-
-export interface SendResponse {
-  id: string;
-  to: string;
-}
-
-export interface PollResponse {
-  messages: Message[];
-}
-
-export interface AckRequest {
-  deliveryIds: string[];
-}
-
-export interface ErrorResponse {
-  error: string;
 }
 
 export type RouteHandler = (

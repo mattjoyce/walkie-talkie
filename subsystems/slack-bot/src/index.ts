@@ -1,4 +1,16 @@
 import bolt from "@slack/bolt";
+import {
+  CONNECTED_USERS_PREFIX,
+  type HubUser,
+  isControl,
+  type Message,
+  POLL_CLIENT_TIMEOUT_MS,
+  RADIO_KILLED_PREFIX,
+  REGISTER_GRACE_RETRY_MS,
+  stripControl,
+  USER_JOINED_PREFIX,
+  USER_LEFT_PREFIX,
+} from "@walkie-talkie/contract";
 
 const { App } = bolt;
 
@@ -13,9 +25,7 @@ const JOIN_TOKEN = process.env.WALKIE_TALKIE_JOIN_TOKEN;
 let slackNotifyChannel: string | null = process.env.WALKIE_TALKIE_SLACK_SYSTEM_NOTIFY_CHANNEL ?? null;
 const BOT_NAME = "slack";
 const HUB_REQUEST_TIMEOUT_MS = 10_000;
-const HUB_POLL_TIMEOUT_MS = 3_660_000; // 1 hour hub hold + 60s client margin
 const REGISTER_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
-const REGISTER_GRACE_RETRY_MS = 35_000;
 
 if (!SLACK_BOT_TOKEN) {
   console.error("WALKIE_TALKIE_SLACK_BOT_TOKEN environment variable is required");
@@ -131,26 +141,6 @@ async function hubSend(to: string, content: string): Promise<void> {
   }
 }
 
-interface HubMessage {
-  id: string;
-  deliveryId?: string;
-  from: string;
-  to: string;
-  content: string;
-  channel: string;
-  timestamp: number;
-  image?: {
-    data: string;
-    mimeType: string;
-  };
-}
-
-interface HubUser {
-  name: string;
-  online: boolean;
-  role: string;
-}
-
 async function hubGetAgents(): Promise<HubUser[]> {
   const res = await hubFetch("/users");
   if (!res.ok) {
@@ -175,7 +165,7 @@ async function replyIfNoAgents(
   return true;
 }
 
-async function hubPoll(): Promise<HubMessage[]> {
+async function hubPoll(): Promise<Message[]> {
   const res = await hubFetch(
     "/poll",
     {
@@ -184,7 +174,7 @@ async function hubPoll(): Promise<HubMessage[]> {
         Authorization: `Bearer ${hubToken}`,
       },
     },
-    HUB_POLL_TIMEOUT_MS,
+    POLL_CLIENT_TIMEOUT_MS,
   );
   if (res.status === 401) {
     throw new HubUnauthorizedError();
@@ -195,7 +185,7 @@ async function hubPoll(): Promise<HubMessage[]> {
   if (!res.ok) {
     throw new Error(`Poll failed: ${res.status}`);
   }
-  const data = (await res.json()) as { messages: HubMessage[] };
+  const data = (await res.json()) as { messages: Message[] };
   return data.messages;
 }
 
@@ -214,7 +204,7 @@ async function hubAck(deliveryId: string): Promise<void> {
   }
 }
 
-async function ackIfDelivered(msg: HubMessage): Promise<void> {
+async function ackIfDelivered(msg: Message): Promise<void> {
   if (msg.deliveryId) {
     await hubAck(msg.deliveryId);
   }
@@ -241,25 +231,25 @@ const threadAgents = new Map<string, string>();
 // ---------------------------------------------------------------------------
 
 function formatSystemMessage(content: string): string | null {
-  if (content.startsWith("CONNECTED_USERS: ")) {
-    const users = content.slice("CONNECTED_USERS: ".length);
+  if (isControl(content, CONNECTED_USERS_PREFIX)) {
+    const users = stripControl(content, CONNECTED_USERS_PREFIX);
     if (users === "(none)") {
       return ":satellite: Walkie-Talkie bridge connected. No agents online.";
     }
     return `:satellite: Walkie-Talkie bridge connected. Online agents: ${users}`;
   }
-  if (content.startsWith("USER_JOINED: ")) {
-    const name = content.slice("USER_JOINED: ".length);
+  if (isControl(content, USER_JOINED_PREFIX)) {
+    const name = stripControl(content, USER_JOINED_PREFIX);
     return `:loud_sound: *${name}* joined Walkie-Talkie`;
   }
-  if (content.startsWith("USER_LEFT: ")) {
-    const name = content.slice("USER_LEFT: ".length);
+  if (isControl(content, USER_LEFT_PREFIX)) {
+    const name = stripControl(content, USER_LEFT_PREFIX);
     return `:mute: *${name}* left Walkie-Talkie`;
   }
   return null;
 }
 
-function formatSlackReply(msg: HubMessage): string {
+function formatSlackReply(msg: Message): string {
   const body = msg.content.trim() || "(no text)";
   const imageNotice = msg.image
     ? `\n\n[image attached: ${msg.image.mimeType}, ${msg.image.data.length} base64 chars; Slack bridge cannot upload images yet]`
@@ -281,7 +271,7 @@ async function pollLoop(): Promise<void> {
         // Handle system notifications (user join/leave)
         if (msg.from === "system") {
           console.log(`[system] ${msg.content}`);
-          if (msg.content.startsWith("RADIO_KILLED:")) {
+          if (isControl(msg.content, RADIO_KILLED_PREFIX)) {
             console.log("[slack-bot] Received RADIO_KILLED, stopping poll loop.");
             await ackIfDelivered(msg);
             return;

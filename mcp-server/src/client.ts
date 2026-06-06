@@ -1,5 +1,15 @@
 import http from "node:http";
 import https from "node:https";
+import {
+  type ChannelSummary,
+  type HubUser,
+  type Message,
+  POLL_CLIENT_TIMEOUT_MS,
+  type PollResponse,
+  type RegisterResponse,
+  type SendResponse,
+  type UsersResponse,
+} from "@walkie-talkie/contract";
 
 interface RequestOptions {
   method: string;
@@ -14,22 +24,7 @@ interface HubResponse<T = unknown> {
   data: T;
 }
 
-export interface HubUser {
-  name: string;
-  online: boolean;
-  role: "agent" | "bridge";
-}
-
-type HubMessage = {
-  id: string;
-  deliveryId?: string;
-  from: string;
-  to: string;
-  content: string;
-  channel: string;
-  timestamp: number;
-  image?: { data: string; mimeType: string };
-};
+export type { HubUser } from "@walkie-talkie/contract";
 
 export class HubClient {
   private baseUrl: URL;
@@ -98,10 +93,10 @@ export class HubClient {
     });
   }
 
-  async register(name: string, joinToken: string, oldToken?: string): Promise<{ token: string; name: string }> {
+  async register(name: string, joinToken: string, oldToken?: string): Promise<RegisterResponse> {
     const body: { name: string; oldToken?: string } = { name };
     if (oldToken) body.oldToken = oldToken;
-    const res = await this.request<{ token: string; name: string }>({
+    const res = await this.request<RegisterResponse>({
       method: "POST",
       path: "/register",
       token: joinToken,
@@ -127,14 +122,14 @@ export class HubClient {
     content: string,
     channel?: string,
     image?: { data: string; mimeType: string },
-  ): Promise<{ id: string; to: string }> {
+  ): Promise<SendResponse> {
     const body: { to: string; content: string; channel?: string; image?: { data: string; mimeType: string } } = {
       to,
       content,
     };
     if (channel) body.channel = channel;
     if (image) body.image = image;
-    const res = await this.request<{ id: string; to: string }>({
+    const res = await this.request<SendResponse>({
       method: "POST",
       path: "/send",
       token,
@@ -146,12 +141,12 @@ export class HubClient {
     return res.data;
   }
 
-  async poll(token: string): Promise<{ messages: HubMessage[] } | null> {
-    const res = await this.request<{ messages: HubMessage[] }>({
+  async poll(token: string): Promise<PollResponse | null> {
+    const res = await this.request<PollResponse>({
       method: "GET",
       path: "/poll",
       token,
-      timeoutMs: 3_660_000, // 1 hour + 60s margin
+      timeoutMs: POLL_CLIENT_TIMEOUT_MS,
     });
     if (res.status === 204) return null;
     if (res.status !== 200) {
@@ -161,8 +156,8 @@ export class HubClient {
     return res.data;
   }
 
-  async inbox(token: string): Promise<{ messages: HubMessage[] }> {
-    const res = await this.request<{ messages: HubMessage[] }>({
+  async inbox(token: string): Promise<PollResponse> {
+    const res = await this.request<PollResponse>({
       method: "GET",
       path: "/inbox",
       token,
@@ -174,7 +169,7 @@ export class HubClient {
     return res.data;
   }
 
-  private async ackDeliveredMessages(token: string, messages: HubMessage[]): Promise<void> {
+  private async ackDeliveredMessages(token: string, messages: Message[]): Promise<void> {
     const deliveryIds = messages.map((message) => message.deliveryId).filter((id): id is string => Boolean(id));
     if (deliveryIds.length === 0) return;
     const res = await this.request<{ ok: boolean }>({
@@ -189,7 +184,7 @@ export class HubClient {
   }
 
   async users(token: string): Promise<HubUser[]> {
-    const res = await this.request<{ users: HubUser[] }>({
+    const res = await this.request<UsersResponse>({
       method: "GET",
       path: "/users",
       token,
@@ -200,8 +195,8 @@ export class HubClient {
     return res.data.users;
   }
 
-  async listChannels(token: string): Promise<Array<{ name: string; memberCount: number; createdBy: string }>> {
-    const res = await this.request<{ channels: Array<{ name: string; memberCount: number; createdBy: string }> }>({
+  async listChannels(token: string): Promise<ChannelSummary[]> {
+    const res = await this.request<{ channels: ChannelSummary[] }>({
       method: "GET",
       path: "/channels",
       token,

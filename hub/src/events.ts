@@ -1,27 +1,7 @@
 import type { ServerResponse } from "node:http";
+import type { HubEvent } from "@walkie-talkie/contract";
 
-export type HubEvent =
-  | {
-      type: "message";
-      from: string;
-      to: string;
-      content: string;
-      channel: string;
-      timestamp: number;
-      image?: { data: string; mimeType: string };
-    }
-  | { type: "join"; name: string; timestamp: number }
-  | { type: "leave"; name: string; timestamp: number }
-  | { type: "channel_create"; name: string; timestamp: number }
-  | { type: "channel_join"; channel: string; userName: string; timestamp: number }
-  | { type: "channel_leave"; channel: string; userName: string; timestamp: number }
-  | { type: "channel_delete"; name: string; timestamp: number }
-  | { type: "status"; name: string; online: boolean; timestamp: number }
-  | { type: "typing"; name: string; channel: string; timestamp: number }
-  | { type: "read_update"; userName: string; channel: string; timestamp: number }
-  | { type: "agent_config_create"; id: string; name: string; timestamp: number }
-  | { type: "agent_config_update"; id: string; name: string; timestamp: number }
-  | { type: "agent_config_delete"; id: string; timestamp: number };
+export type { HubEvent } from "@walkie-talkie/contract";
 
 const HEARTBEAT_INTERVAL_MS = 30_000; // 30 seconds
 

@@ -4,8 +4,14 @@ import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { formatControl, isControl, RADIO_KILLED_PREFIX } from "@walkie-talkie/contract";
 import { z } from "zod";
 import { HubClient } from "./client.js";
+
+const RADIO_KILLED_NOTICE = formatControl(
+  RADIO_KILLED_PREFIX,
+  "You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately.",
+);
 
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -253,7 +259,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
             content: [{ type: "text" as const, text: "No new messages." }],
           };
         }
-        const killed = result.messages.find((m) => m.content.startsWith("RADIO_KILLED:"));
+        const killed = result.messages.find((m) => isControl(m.content, RADIO_KILLED_PREFIX));
         if (killed) {
           currentToken = null;
           currentName = null;
@@ -261,7 +267,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
             content: [
               {
                 type: "text" as const,
-                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately.",
+                text: RADIO_KILLED_NOTICE,
               },
             ],
             isError: true,
@@ -300,7 +306,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
             content: [
               {
                 type: "text" as const,
-                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately.",
+                text: RADIO_KILLED_NOTICE,
               },
             ],
             isError: true,
@@ -333,7 +339,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
           };
         }
         // Check for kill signal from operator
-        const killed = result.messages.find((m) => m.content.startsWith("RADIO_KILLED:"));
+        const killed = result.messages.find((m) => isControl(m.content, RADIO_KILLED_PREFIX));
         if (killed) {
           currentToken = null;
           currentName = null;
@@ -341,7 +347,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
             content: [
               {
                 type: "text" as const,
-                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately.",
+                text: RADIO_KILLED_NOTICE,
               },
             ],
             isError: true,
@@ -386,7 +392,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
             content: [
               {
                 type: "text" as const,
-                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately.",
+                text: RADIO_KILLED_NOTICE,
               },
             ],
             isError: true,

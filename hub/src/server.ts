@@ -1,6 +1,16 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
+  type AgentConfigDTO,
+  CONNECTED_USERS_PREFIX,
+  formatControl,
+  RADIO_KILLED_PREFIX,
+  STALE_GRACE_MS,
+  TYPING_SIGNAL,
+  USER_JOINED_PREFIX,
+  USER_LEFT_PREFIX,
+} from "@walkie-talkie/contract";
+import {
   authenticateRequest,
   getRegisteredUsers,
   getSessionEpoch,
@@ -31,10 +41,10 @@ import {
   dbGetAgentConfig,
   dbGetChannel,
   dbGetChannelMessages,
-  dbHealthCheck,
   dbGetRecentMessages,
   dbGetUnreadCounts,
   dbGetUserChannels,
+  dbHealthCheck,
   dbListAgentConfigs,
   dbListChannels,
   dbUpdateAgentConfig,
@@ -64,7 +74,6 @@ const LIVENESS_STALE_MS = 45_000;
 const MAX_ACK_DELIVERY_IDS = 500;
 const dashboardSessions = new Map<string, number>();
 const lastSeenByUser = new Map<string, number>();
-const STALE_GRACE_MS = 30_000; // 30 seconds before auto-unregister
 const staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function clearGraceTimer(name: string): void {
@@ -133,7 +142,11 @@ function sendError(res: ServerResponse, status: number, message: string): void {
   sendJson(res, status, { error: message });
 }
 
-function rejectStaleSession(res: ServerResponse, userName: string | undefined, sessionEpoch: number | undefined): boolean {
+function rejectStaleSession(
+  res: ServerResponse,
+  userName: string | undefined,
+  sessionEpoch: number | undefined,
+): boolean {
   if (!userName || !isCurrentSession(userName, sessionEpoch)) {
     sendError(res, 401, "Unauthorized");
     return true;
@@ -212,7 +225,7 @@ const handleRegister: RouteHandler = async (req, res) => {
     console.log(`[register] ${body.name}`);
 
     if (role === "agent") {
-      notifyBridges(`USER_JOINED: ${body.name}`);
+      notifyBridges(formatControl(USER_JOINED_PREFIX, body.name));
     } else if (role === "bridge") {
       // Send current agent list to the newly connected bridge (even if empty)
       const agents = getRegisteredUsers().filter((n) => n !== body.name && getUserRole(n) === "agent");
@@ -220,7 +233,7 @@ const handleRegister: RouteHandler = async (req, res) => {
         id: randomUUID(),
         from: "system",
         to: body.name,
-        content: agents.length > 0 ? `CONNECTED_USERS: ${agents.join(", ")}` : "CONNECTED_USERS: (none)",
+        content: formatControl(CONNECTED_USERS_PREFIX, agents.length > 0 ? agents.join(", ") : "(none)"),
         channel: "#all",
         timestamp: Date.now(),
       });
@@ -240,7 +253,7 @@ const handleSend: RouteHandler = async (req, res, userName, sessionEpoch) => {
   }
   const image = validateImagePayload(body.image);
   // Typing indicator: broadcast typing event without routing to chat log
-  if (body.content === "TYPING") {
+  if (body.content === TYPING_SIGNAL) {
     const channel = body.channel || "#all";
     dbUpdateReadCursor(userName!, channel);
     broadcast({ type: "typing", name: userName!, channel, timestamp: Date.now() });
@@ -339,7 +352,7 @@ const handleUnregister: RouteHandler = async (_req, res, userName) => {
   unregisterUser(userName!);
   broadcast({ type: "leave", name: userName!, timestamp: Date.now() });
   if (role === "agent") {
-    notifyBridges(`USER_LEFT: ${userName}`);
+    notifyBridges(formatControl(USER_LEFT_PREFIX, userName!));
   }
   console.log(`[unregister] ${userName}`);
   sendJson(res, 200, { ok: true });
@@ -354,7 +367,7 @@ function kickUser(name: string): boolean {
     id: randomUUID(),
     from: "system",
     to: name,
-    content: "RADIO_KILLED: You have been disconnected by the operator.",
+    content: formatControl(RADIO_KILLED_PREFIX, "You have been disconnected by the operator."),
     channel: "#all",
     timestamp: Date.now(),
   });
@@ -365,7 +378,7 @@ function kickUser(name: string): boolean {
   unregisterUser(name);
   broadcast({ type: "leave", name, timestamp: Date.now() });
   if (role === "agent") {
-    notifyBridges(`USER_LEFT: ${name}`);
+    notifyBridges(formatControl(USER_LEFT_PREFIX, name));
   }
   console.log(`[kick] ${name}`);
   return true;
@@ -626,7 +639,7 @@ const handleAdminUnreadCounts: RouteHandler = async (_req, res) => {
 // Agent config endpoints
 const handleAdminAgentConfigs: RouteHandler = async (_req, res) => {
   const configs = dbListAgentConfigs();
-  const result = configs.map((c) => ({
+  const result: AgentConfigDTO[] = configs.map((c) => ({
     id: c.id,
     name: c.name,
     workDir: c.work_dir,
@@ -835,7 +848,7 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
           unregisterUser(userName);
           broadcast({ type: "leave", name: userName, timestamp: Date.now() });
           if (role === "agent") {
-            notifyBridges(`USER_LEFT: ${userName}`);
+            notifyBridges(formatControl(USER_LEFT_PREFIX, userName));
           }
           console.log(`[auto-unregister] ${userName} (stale)`);
         }
