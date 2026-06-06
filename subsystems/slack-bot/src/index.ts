@@ -12,6 +12,10 @@ const HUB_URL = process.env.WALKIE_TALKIE_HUB_URL || "http://localhost:9559";
 const JOIN_TOKEN = process.env.WALKIE_TALKIE_JOIN_TOKEN;
 let slackNotifyChannel: string | null = process.env.WALKIE_TALKIE_SLACK_SYSTEM_NOTIFY_CHANNEL ?? null;
 const BOT_NAME = "slack";
+const HUB_REQUEST_TIMEOUT_MS = 10_000;
+const HUB_POLL_TIMEOUT_MS = 3_660_000; // 1 hour hub hold + 60s client margin
+const REGISTER_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+const REGISTER_GRACE_RETRY_MS = 35_000;
 
 if (!SLACK_BOT_TOKEN) {
   console.error("WALKIE_TALKIE_SLACK_BOT_TOKEN environment variable is required");
@@ -40,34 +44,80 @@ class HubUnauthorizedError extends Error {
   }
 }
 
-async function hubRegister(): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch(`${HUB_URL}/register`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${JOIN_TOKEN}`,
-      },
-      body: JSON.stringify({ name: BOT_NAME, oldToken: hubToken, role: "bridge" }),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as { token: string; name: string };
-      hubToken = data.token;
-      console.log(`[hub] Registered as "${data.name}"`);
-      return;
-    }
-    const err = (await res.json()) as { error: string };
-    if (res.status === 409 && attempt < 2) {
-      console.log("[hub] Already registered, waiting for grace period to expire...");
-      await new Promise((resolve) => setTimeout(resolve, 35_000));
-      continue;
-    }
-    throw new Error(`Failed to register on Hub: ${err.error}`);
+class RetryableHubError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetryableHubError";
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getRetryDelayMs(attempt: number): number {
+  return REGISTER_RETRY_DELAYS_MS[Math.min(attempt, REGISTER_RETRY_DELAYS_MS.length - 1)];
+}
+
+async function hubFetch(path: string, init: RequestInit = {}, timeoutMs = HUB_REQUEST_TIMEOUT_MS): Promise<Response> {
+  return fetch(`${HUB_URL}${path}`, {
+    ...init,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+}
+
+async function readHubError(res: Response, fallback: string): Promise<string> {
+  try {
+    const err = (await res.json()) as { error?: string };
+    return err.error ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function hubRegister(): Promise<void> {
+  let attempt = 0;
+  while (!shuttingDown) {
+    try {
+      const res = await hubFetch("/register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${JOIN_TOKEN}`,
+        },
+        body: JSON.stringify({ name: BOT_NAME, oldToken: hubToken, role: "bridge" }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { token: string; name: string };
+        hubToken = data.token;
+        console.log(`[hub] Registered as "${data.name}"`);
+        return;
+      }
+      const error = await readHubError(res, `HTTP ${res.status}`);
+      if (res.status === 409) {
+        console.log("[hub] Already registered, waiting for grace period to expire...");
+        await sleep(REGISTER_GRACE_RETRY_MS);
+        attempt = 0;
+        continue;
+      }
+      if (res.status >= 500) {
+        throw new RetryableHubError(`Hub returned ${res.status}: ${error}`);
+      }
+      throw new Error(`Failed to register on Hub: ${error}`);
+    } catch (e) {
+      if (e instanceof Error && !(e instanceof RetryableHubError) && e.message.startsWith("Failed to register")) {
+        throw e;
+      }
+      const delayMs = getRetryDelayMs(attempt++);
+      console.error(`[hub] Register failed: ${(e as Error).message}. Retrying in ${delayMs / 1000}s...`);
+      await sleep(delayMs);
+    }
+  }
+  throw new Error("Shutting down before Hub registration completed");
+}
+
 async function hubSend(to: string, content: string): Promise<void> {
-  const res = await fetch(`${HUB_URL}/send`, {
+  const res = await hubFetch("/send", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -76,8 +126,8 @@ async function hubSend(to: string, content: string): Promise<void> {
     body: JSON.stringify({ to, content }),
   });
   if (!res.ok) {
-    const err = (await res.json()) as { error: string };
-    throw new Error(`Failed to send message: ${err.error}`);
+    const error = await readHubError(res, "Send failed");
+    throw new Error(`Failed to send message: ${error}`);
   }
 }
 
@@ -97,19 +147,40 @@ interface HubUser {
 }
 
 async function hubGetAgents(): Promise<HubUser[]> {
-  const res = await fetch(`${HUB_URL}/users`);
-  if (!res.ok) return [];
+  const res = await hubFetch("/users");
+  if (!res.ok) {
+    const error = await readHubError(res, "Failed to fetch users");
+    throw new Error(`Failed to get agents: ${error}`);
+  }
   const data = (await res.json()) as { users: HubUser[] };
   return data.users.filter((u) => u.role === "agent" && u.online);
 }
 
+async function replyIfNoAgents(
+  say: (message: { text: string; thread_ts: string }) => Promise<unknown>,
+  threadTs: string,
+): Promise<boolean> {
+  try {
+    const agents = await hubGetAgents();
+    if (agents.length > 0) return false;
+    await say({ text: "No agents are currently connected to the Hub.", thread_ts: threadTs });
+  } catch (e) {
+    await say({ text: `Hub is unavailable: ${(e as Error).message}`, thread_ts: threadTs });
+  }
+  return true;
+}
+
 async function hubPoll(): Promise<HubMessage[]> {
-  const res = await fetch(`${HUB_URL}/poll`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${hubToken}`,
+  const res = await hubFetch(
+    "/poll",
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${hubToken}`,
+      },
     },
-  });
+    HUB_POLL_TIMEOUT_MS,
+  );
   if (res.status === 401) {
     throw new HubUnauthorizedError();
   }
@@ -284,10 +355,7 @@ async function main(): Promise<void> {
 
     const { to, content } = parseCommand(rawText);
 
-    // Check if any agents are connected
-    const agents = await hubGetAgents();
-    if (agents.length === 0) {
-      await say({ text: "No agents are currently connected to the Hub.", thread_ts: event.ts });
+    if (await replyIfNoAgents(say, event.ts)) {
       return;
     }
 
@@ -344,10 +412,7 @@ async function main(): Promise<void> {
       content = rawText;
     }
 
-    // Check if any agents are connected
-    const agents = await hubGetAgents();
-    if (agents.length === 0) {
-      await say({ text: "No agents are currently connected to the Hub.", thread_ts: threadTs });
+    if (await replyIfNoAgents(say, threadTs)) {
       return;
     }
 
