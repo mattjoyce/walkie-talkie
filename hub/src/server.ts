@@ -29,6 +29,7 @@ import {
   dbGetAgentConfig,
   dbGetChannel,
   dbGetChannelMessages,
+  dbHealthCheck,
   dbGetRecentMessages,
   dbGetUnreadCounts,
   dbGetUserChannels,
@@ -49,7 +50,9 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const HEADERS_TIMEOUT_MS = 10_000;
 const DASHBOARD_SESSION_TTL_MS = 60 * 60 * 1000;
+const LIVENESS_STALE_MS = 45_000;
 const dashboardSessions = new Map<string, number>();
+const lastSeenByUser = new Map<string, number>();
 
 class RequestError extends Error {
   constructor(
@@ -154,6 +157,7 @@ const handleRegister: RouteHandler = async (req, res) => {
     }
     const role = body.role === "bridge" ? "bridge" : "agent";
     const user = registerUser(body.name, role);
+    lastSeenByUser.set(body.name, Date.now());
     ensureQueue(body.name);
     setOnline(body.name);
     // Auto-join #all
@@ -255,10 +259,37 @@ const handleUsers: RouteHandler = async (_req, res) => {
   sendJson(res, 200, { users });
 };
 
+const handleHealth: RouteHandler = async (_req, res) => {
+  const now = Date.now();
+  const users = getRegisteredUsers().map((name) => ({
+    name,
+    role: getUserRole(name) ?? "agent",
+    online: isOnline(name),
+    lastSeenAt: lastSeenByUser.get(name) ?? null,
+    stale: now - (lastSeenByUser.get(name) ?? 0) > LIVENESS_STALE_MS,
+  }));
+  const agents = dbListAgentConfigs().map((config) => ({
+    name: config.name,
+    configured: true,
+    online: isUserRegistered(config.name) && isOnline(config.name),
+    lastSeenAt: lastSeenByUser.get(config.name) ?? null,
+    stale: now - (lastSeenByUser.get(config.name) ?? 0) > LIVENESS_STALE_MS,
+  }));
+  sendJson(res, 200, {
+    ok: true,
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp: now,
+    db: { ok: dbHealthCheck() },
+    users,
+    agents,
+  });
+};
+
 const handleUnregister: RouteHandler = async (_req, res, userName) => {
   const role = getUserRole(userName!);
   removePoll(userName!);
   removeQueue(userName!);
+  lastSeenByUser.delete(userName!);
   unregisterUser(userName!);
   broadcast({ type: "leave", name: userName!, timestamp: Date.now() });
   if (role === "agent") {
@@ -283,6 +314,7 @@ function kickUser(name: string): boolean {
   });
   removePoll(name);
   removeQueue(name);
+  lastSeenByUser.delete(name);
   unregisterUser(name);
   broadcast({ type: "leave", name, timestamp: Date.now() });
   if (role === "agent") {
@@ -662,6 +694,7 @@ const handleAdminAgentStart: RouteHandler = async (req, res) => {
 };
 
 const publicRoutes: Record<string, { method: string; handler: RouteHandler }> = {
+  "/health": { method: "GET", handler: handleHealth },
   "/users": { method: "GET", handler: handleUsers },
   "/channels": { method: "GET", handler: handleListChannels },
 };
@@ -749,6 +782,7 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
           removePoll(userName);
           removeQueue(userName);
           setOffline(userName);
+          lastSeenByUser.delete(userName);
           unregisterUser(userName);
           broadcast({ type: "leave", name: userName, timestamp: Date.now() });
           if (role === "agent") {
@@ -858,6 +892,7 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
         setOnline(userName);
         broadcast({ type: "status", name: userName, online: true, timestamp: Date.now() });
       }
+      lastSeenByUser.set(userName, Date.now());
       protectedRoute.handler(req, res, userName).catch((e) => {
         handleRouteError(res, e);
       });

@@ -282,6 +282,11 @@ export function dbGetBusyTimeoutMs(): number {
   return (db.pragma("busy_timeout", { simple: true }) as number) ?? 0;
 }
 
+export function dbHealthCheck(): boolean {
+  const result = db.prepare("SELECT 1 as ok").get() as { ok: number } | undefined;
+  return result?.ok === 1;
+}
+
 export function dbGetAgentConfig(id: string): AgentConfigRow | undefined {
   return db.prepare("SELECT * FROM agent_configs WHERE id = ?").get(id) as AgentConfigRow | undefined;
 }

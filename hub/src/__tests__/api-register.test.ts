@@ -105,3 +105,23 @@ describe("POST /unregister", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("liveness reporting", () => {
+  it("should expose last-seen user state in /health", async () => {
+    const token = await registerUser(ctx, "reg-health");
+    const res = await fetch(`${ctx.baseUrl}/inbox`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+
+    const healthRes = await fetch(`${ctx.baseUrl}/health`);
+    const health = (await healthRes.json()) as {
+      users: { name: string; online: boolean; lastSeenAt: number | null; stale: boolean }[];
+    };
+    const user = health.users.find((u) => u.name === "reg-health");
+    expect(user).toBeDefined();
+    expect(user!.online).toBe(true);
+    expect(user!.lastSeenAt).toEqual(expect.any(Number));
+    expect(user!.stale).toBe(false);
+  });
+});

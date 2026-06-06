@@ -75,6 +75,16 @@ describe("authentication", () => {
     const res = await fetch(`${ctx.baseUrl}/channels`);
     expect(res.status).toBe(200);
   });
+
+  it("should allow public access to /health", async () => {
+    const res = await fetch(`${ctx.baseUrl}/health`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; db: { ok: boolean }; users: unknown[]; agents: unknown[] };
+    expect(body.ok).toBe(true);
+    expect(body.db.ok).toBe(true);
+    expect(Array.isArray(body.users)).toBe(true);
+    expect(Array.isArray(body.agents)).toBe(true);
+  });
 });
 
 describe("request hardening", () => {
