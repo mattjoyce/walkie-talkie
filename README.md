@@ -250,6 +250,10 @@ The system uses two separate tokens:
 1. `/plugin` → **Installed** tab → select `walkie-talkie` → Uninstall
 2. `/plugin` → **Marketplaces** tab → select `suruseas` → Remove
 
+## Supervisor
+
+Run the Hub under a process supervisor in production. A systemd template is provided at `deploy/walkie-talkie-hub.service`; set `WALKIE_TALKIE_JOIN_TOKEN`, `WALKIE_TALKIE_ADMIN_TOKEN`, and optional `PORT` in `/etc/walkie-talkie/hub.env`, then install the unit with `Restart=always`. The unit checks `GET /health` after start so failed boots are restarted by systemd.
+
 ## ❓ Troubleshooting
 
 ### MCP server fails to start after plugin install

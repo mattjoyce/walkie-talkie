@@ -38,8 +38,11 @@ server.on("listening", () => {
 
 // Graceful shutdown
 let shuttingDown = false;
-function handleShutdown(): void {
-  if (shuttingDown) return;
+function handleShutdown(exitCode = 0): void {
+  if (shuttingDown) {
+    if (exitCode !== 0) process.exit(exitCode);
+    return;
+  }
   shuttingDown = true;
   // Restore terminal to cooked mode if it was set to raw
   if (process.stdin.isTTY && process.stdin.isRaw) {
@@ -62,7 +65,7 @@ function handleShutdown(): void {
   closeAllPolls();
   server.close(() => {
     console.log("[shutdown] Hub stopped.");
-    process.exit(0);
+    process.exit(exitCode);
   });
   // Force exit after 10 seconds
   setTimeout(() => {
@@ -71,5 +74,12 @@ function handleShutdown(): void {
   }, 10_000).unref();
 }
 
-process.on("SIGINT", handleShutdown);
-process.on("SIGTERM", handleShutdown);
+function handleFatal(reason: string, err: unknown): void {
+  console.error(`[fatal] ${reason}:`, err);
+  handleShutdown(1);
+}
+
+process.on("SIGINT", () => handleShutdown(0));
+process.on("SIGTERM", () => handleShutdown(0));
+process.on("uncaughtException", (err) => handleFatal("uncaughtException", err));
+process.on("unhandledRejection", (reason) => handleFatal("unhandledRejection", reason));

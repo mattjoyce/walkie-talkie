@@ -477,16 +477,23 @@ async function notifyShutdown(): Promise<void> {
 }
 
 let shuttingDown = false;
-async function shutdown(): Promise<void> {
+async function shutdown(exitCode = 0): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log("[slack-bot] Shutting down...");
   await notifyShutdown();
-  process.exit(0);
+  process.exit(exitCode);
 }
 
-process.on("SIGINT", () => void shutdown());
-process.on("SIGTERM", () => void shutdown());
+function fatal(reason: string, err: unknown): void {
+  console.error(`[fatal] ${reason}:`, err);
+  void shutdown(1);
+}
+
+process.on("SIGINT", () => void shutdown(0));
+process.on("SIGTERM", () => void shutdown(0));
+process.on("uncaughtException", (err) => fatal("uncaughtException", err));
+process.on("unhandledRejection", (reason) => fatal("unhandledRejection", reason));
 
 main().catch((e) => {
   console.error("Fatal:", e);
