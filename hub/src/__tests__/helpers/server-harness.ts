@@ -1,5 +1,5 @@
 import type { Server } from "node:http";
-import { resetAuthState } from "../../auth.js";
+import { loadUsersFromDB, resetAuthState } from "../../auth.js";
 import { loadMembershipFromDB, resetChannelState } from "../../channels.js";
 import { initDB } from "../../db.js";
 import { createHubServer } from "../../server.js";
@@ -22,6 +22,7 @@ export async function startTestServer(): Promise<TestContext> {
   // Init in-memory DB
   process.env.WALKIE_TALKIE_DB_PATH = ":memory:";
   initDB();
+  loadUsersFromDB();
   loadMembershipFromDB();
 
   const server = createHubServer(0, ADMIN_TOKEN, JOIN_TOKEN);

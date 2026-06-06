@@ -90,9 +90,23 @@ for m in messages:
 "
       py_exit=$?
       case "$py_exit" in
-        0) exit 0 ;;       # Messages printed successfully
+        0)
+          delivery_ids=$(printf "%s" "$body" | python3 -c "import sys, json; print(json.dumps([m['deliveryId'] for m in json.load(sys.stdin).get('messages', []) if m.get('deliveryId')]))")
+          if [ "$delivery_ids" != "[]" ]; then
+            curl -s -o /dev/null -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+              --data "{\"deliveryIds\":$delivery_ids}" "$HUB_URL/ack" || true
+          fi
+          exit 0
+          ;;               # Messages printed successfully
         2) continue ;;     # Empty messages, retry poll
-        3) exit 1 ;;       # RADIO_KILLED
+        3)
+          delivery_ids=$(printf "%s" "$body" | python3 -c "import sys, json; print(json.dumps([m['deliveryId'] for m in json.load(sys.stdin).get('messages', []) if m.get('deliveryId')]))")
+          if [ "$delivery_ids" != "[]" ]; then
+            curl -s -o /dev/null -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+              --data "{\"deliveryIds\":$delivery_ids}" "$HUB_URL/ack" || true
+          fi
+          exit 1
+          ;;               # RADIO_KILLED
         *) exit 1 ;;       # Parse error
       esac
       ;;

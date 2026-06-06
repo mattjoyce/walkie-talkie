@@ -245,6 +245,12 @@ The system uses two separate tokens:
 | `radio_channel_invite` | Invite a user to a channel |
 | `radio_out` | Disconnect from the Hub |
 
+## Delivery Guarantee
+
+The Hub targets at-least-once delivery with per-recipient FIFO ordering. Each queued delivery is persisted in SQLite and returned by `/inbox` or `/poll` with a `deliveryId`; clients acknowledge receipt with `/ack` after successfully parsing and handling the response. Until acknowledged, the same delivery can be returned again after a reconnect or Hub restart, so clients must tolerate duplicates by message id.
+
+Per-recipient queues are bounded to the newest 500 undelivered messages. If a user never polls or acknowledges messages past that cap, the Hub drops the oldest queued deliveries for that user and logs the drop count.
+
 ## 🗑️ Uninstall
 
 1. `/plugin` → **Installed** tab → select `walkie-talkie` → Uninstall

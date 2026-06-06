@@ -133,6 +133,7 @@ async function hubSend(to: string, content: string): Promise<void> {
 
 interface HubMessage {
   id: string;
+  deliveryId?: string;
   from: string;
   to: string;
   content: string;
@@ -188,11 +189,35 @@ async function hubPoll(): Promise<HubMessage[]> {
   if (res.status === 401) {
     throw new HubUnauthorizedError();
   }
+  if (res.status === 204) {
+    return [];
+  }
   if (!res.ok) {
     throw new Error(`Poll failed: ${res.status}`);
   }
   const data = (await res.json()) as { messages: HubMessage[] };
   return data.messages;
+}
+
+async function hubAck(deliveryId: string): Promise<void> {
+  const res = await hubFetch("/ack", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${hubToken}`,
+    },
+    body: JSON.stringify({ deliveryIds: [deliveryId] }),
+  });
+  if (!res.ok) {
+    const error = await readHubError(res, "Ack failed");
+    throw new Error(`Failed to ack message: ${error}`);
+  }
+}
+
+async function ackIfDelivered(msg: HubMessage): Promise<void> {
+  if (msg.deliveryId) {
+    await hubAck(msg.deliveryId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +283,7 @@ async function pollLoop(): Promise<void> {
           console.log(`[system] ${msg.content}`);
           if (msg.content.startsWith("RADIO_KILLED:")) {
             console.log("[slack-bot] Received RADIO_KILLED, stopping poll loop.");
+            await ackIfDelivered(msg);
             return;
           }
           if (slackNotifyChannel) {
@@ -274,10 +300,14 @@ async function pollLoop(): Promise<void> {
               }
             }
           }
+          await ackIfDelivered(msg);
           continue;
         }
         // Skip our own messages
-        if (msg.from === BOT_NAME) continue;
+        if (msg.from === BOT_NAME) {
+          await ackIfDelivered(msg);
+          continue;
+        }
 
         // Find the pending reply for this agent or for @all
         const pending = pendingReplies.get(msg.from) || pendingReplies.get("*");
@@ -290,10 +320,12 @@ async function pollLoop(): Promise<void> {
             thread_ts: pending.threadTs,
             text: formatSlackReply(msg),
           });
+          await ackIfDelivered(msg);
         } else {
           // No pending reply — post as a new message to a default channel if configured
           const imageTag = msg.image ? ` [image attached: ${msg.image.mimeType}]` : "";
           console.log(`[hub] Unmatched message from ${msg.from}: ${msg.content.slice(0, 100)}${imageTag}`);
+          await ackIfDelivered(msg);
         }
       }
     } catch (e) {

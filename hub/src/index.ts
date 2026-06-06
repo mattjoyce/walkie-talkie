@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { getRegisteredUsers } from "./auth.js";
+import { getRegisteredUsers, loadUsersFromDB } from "./auth.js";
 import { loadMembershipFromDB } from "./channels.js";
 import { initDB } from "./db.js";
 import { closeAllSSEClients } from "./events.js";
@@ -24,6 +24,7 @@ if (!adminToken) {
 }
 
 initDB();
+loadUsersFromDB();
 loadMembershipFromDB();
 
 const server = createHubServer(port, adminToken, joinToken);

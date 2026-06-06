@@ -7,6 +7,7 @@ export interface MessageImage {
 
 export interface Message {
   id: string;
+  deliveryId?: string;
   from: string;
   to: string;
   content: string;
@@ -55,6 +56,10 @@ export interface SendResponse {
 
 export interface PollResponse {
   messages: Message[];
+}
+
+export interface AckRequest {
+  deliveryIds: string[];
 }
 
 export interface ErrorResponse {

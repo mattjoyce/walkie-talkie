@@ -41,8 +41,16 @@ import {
 import { addSSEClient, broadcast } from "./events.js";
 import { launchAgent } from "./launcher.js";
 import { addPoll, isOnline, onPollDisconnect, removePoll, setOffline, setOnline } from "./polling.js";
-import { drainQueue, enqueueAndDeliver, ensureQueue, notifyBridges, removeQueue, routeMessage } from "./router.js";
-import type { MessageImage, RegisterRequest, RouteHandler, SendRequest } from "./types.js";
+import {
+  ackDeliveries,
+  enqueueAndDeliver,
+  ensureQueue,
+  notifyBridges,
+  peekQueue,
+  removeQueue,
+  routeMessage,
+} from "./router.js";
+import type { AckRequest, MessageImage, RegisterRequest, RouteHandler, SendRequest } from "./types.js";
 
 const AGENT_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -51,6 +59,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const HEADERS_TIMEOUT_MS = 10_000;
 const DASHBOARD_SESSION_TTL_MS = 60 * 60 * 1000;
 const LIVENESS_STALE_MS = 45_000;
+const MAX_ACK_DELIVERY_IDS = 500;
 const dashboardSessions = new Map<string, number>();
 const lastSeenByUser = new Map<string, number>();
 
@@ -146,7 +155,6 @@ const handleRegister: RouteHandler = async (req, res) => {
         return sendError(res, 409, `User "${body.name}" is already registered`);
       }
       removePoll(body.name);
-      removeQueue(body.name);
       unregisterUser(body.name, { preserveMemberships: true });
     }
     // Cancel grace timer if reconnecting
@@ -237,8 +245,21 @@ const handleSend: RouteHandler = async (req, res, userName) => {
 };
 
 const handleInbox: RouteHandler = async (_req, res, userName) => {
-  const messages = drainQueue(userName!);
+  const messages = peekQueue(userName!);
   sendJson(res, 200, { messages });
+};
+
+const handleAck: RouteHandler = async (req, res, userName) => {
+  const body = await readJson<AckRequest>(req);
+  if (
+    !Array.isArray(body.deliveryIds) ||
+    body.deliveryIds.length > MAX_ACK_DELIVERY_IDS ||
+    body.deliveryIds.some((id) => typeof id !== "string" || !id)
+  ) {
+    return sendError(res, 400, "Missing or invalid 'deliveryIds' field");
+  }
+  ackDeliveries(userName!, body.deliveryIds);
+  sendJson(res, 200, { ok: true });
 };
 
 const handlePoll: RouteHandler = async (req, res, userName) => {
@@ -723,6 +744,7 @@ const protectedRoutes: Record<string, { method: string; handler: RouteHandler }>
   "/send": { method: "POST", handler: handleSend },
   "/poll": { method: "GET", handler: handlePoll },
   "/inbox": { method: "GET", handler: handleInbox },
+  "/ack": { method: "POST", handler: handleAck },
   "/unregister": { method: "POST", handler: handleUnregister },
   "/channel-create": { method: "POST", handler: handleChannelCreate },
   "/channel-join": { method: "POST", handler: handleChannelJoin },

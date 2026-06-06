@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { removeUserFromAllChannels } from "./channels.js";
+import { dbDeleteUser, dbListUsers, dbSaveUser } from "./db.js";
 import type { User, UserRole } from "./types.js";
 
 const users = new Map<string, User>();
@@ -18,6 +19,7 @@ export function registerUser(name: string, role: UserRole = "agent"): User {
   const user: User = { name, token, role, registeredAt: Date.now() };
   users.set(name, user);
   tokenToName.set(token, name);
+  dbSaveUser(user.name, user.token, user.role, user.registeredAt);
   return user;
 }
 
@@ -26,6 +28,7 @@ export function unregisterUser(name: string, options: { preserveMemberships?: bo
   if (user) {
     tokenToName.delete(user.token);
     users.delete(name);
+    dbDeleteUser(name);
     if (!options.preserveMemberships) {
       removeUserFromAllChannels(name);
     }
@@ -60,4 +63,20 @@ export function isUserRegistered(name: string): boolean {
 export function resetAuthState(): void {
   users.clear();
   tokenToName.clear();
+}
+
+export function loadUsersFromDB(): void {
+  users.clear();
+  tokenToName.clear();
+  for (const row of dbListUsers()) {
+    const role: UserRole = row.role === "bridge" ? "bridge" : "agent";
+    const user: User = {
+      name: row.name,
+      token: row.token,
+      role,
+      registeredAt: row.registered_at,
+    };
+    users.set(user.name, user);
+    tokenToName.set(user.token, user.name);
+  }
 }

@@ -30208,6 +30208,7 @@ var HubClient = class {
     if (res.status !== 200) {
       throw new Error(res.data.error ?? "Poll failed");
     }
+    await this.ackDeliveredMessages(token, res.data.messages);
     return res.data;
   }
   async inbox(token) {
@@ -30219,7 +30220,21 @@ var HubClient = class {
     if (res.status !== 200) {
       throw new Error(res.data.error ?? "Inbox fetch failed");
     }
+    await this.ackDeliveredMessages(token, res.data.messages);
     return res.data;
+  }
+  async ackDeliveredMessages(token, messages) {
+    const deliveryIds = messages.map((message) => message.deliveryId).filter((id) => Boolean(id));
+    if (deliveryIds.length === 0) return;
+    const res = await this.request({
+      method: "POST",
+      path: "/ack",
+      token,
+      body: { deliveryIds }
+    });
+    if (res.status !== 200) {
+      throw new Error(res.data.error ?? "Ack failed");
+    }
   }
   async users(token) {
     const res = await this.request({

@@ -47,6 +47,51 @@ describe("POST /send", () => {
     expect(body.to).toBe("dm-bob");
   });
 
+  it("should redeliver inbox messages until acknowledged", async () => {
+    const aliceToken = await registerUser(ctx, "ack-alice");
+    const bobToken = await registerUser(ctx, "ack-bob");
+
+    const sendRes = await fetch(`${ctx.baseUrl}/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${aliceToken}`,
+      },
+      body: JSON.stringify({ to: "@ack-bob", content: "ack me" }),
+    });
+    expect(sendRes.status).toBe(200);
+
+    const firstInbox = await fetch(`${ctx.baseUrl}/inbox`, {
+      headers: { Authorization: `Bearer ${bobToken}` },
+    });
+    const firstBody = (await firstInbox.json()) as { messages: { content: string; deliveryId?: string }[] };
+    expect(firstBody.messages).toHaveLength(1);
+    expect(firstBody.messages[0].content).toBe("ack me");
+    expect(firstBody.messages[0].deliveryId).toBeTruthy();
+
+    const secondInbox = await fetch(`${ctx.baseUrl}/inbox`, {
+      headers: { Authorization: `Bearer ${bobToken}` },
+    });
+    const secondBody = (await secondInbox.json()) as { messages: { content: string; deliveryId?: string }[] };
+    expect(secondBody.messages).toHaveLength(1);
+
+    const ackRes = await fetch(`${ctx.baseUrl}/ack`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${bobToken}`,
+      },
+      body: JSON.stringify({ deliveryIds: [firstBody.messages[0].deliveryId] }),
+    });
+    expect(ackRes.status).toBe(200);
+
+    const finalInbox = await fetch(`${ctx.baseUrl}/inbox`, {
+      headers: { Authorization: `Bearer ${bobToken}` },
+    });
+    const finalBody = (await finalInbox.json()) as { messages: unknown[] };
+    expect(finalBody.messages).toEqual([]);
+  });
+
   it("should handle TYPING indicator", async () => {
     const token = await registerUser(ctx, "typing-user");
     const res = await fetch(`${ctx.baseUrl}/send`, {

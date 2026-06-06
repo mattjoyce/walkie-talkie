@@ -20,6 +20,17 @@ export interface HubUser {
   role: "agent" | "bridge";
 }
 
+type HubMessage = {
+  id: string;
+  deliveryId?: string;
+  from: string;
+  to: string;
+  content: string;
+  channel: string;
+  timestamp: number;
+  image?: { data: string; mimeType: string };
+};
+
 export class HubClient {
   private baseUrl: URL;
 
@@ -135,28 +146,8 @@ export class HubClient {
     return res.data;
   }
 
-  async poll(token: string): Promise<{
-    messages: Array<{
-      id: string;
-      from: string;
-      to: string;
-      content: string;
-      channel: string;
-      timestamp: number;
-      image?: { data: string; mimeType: string };
-    }>;
-  } | null> {
-    const res = await this.request<{
-      messages: Array<{
-        id: string;
-        from: string;
-        to: string;
-        content: string;
-        channel: string;
-        timestamp: number;
-        image?: { data: string; mimeType: string };
-      }>;
-    }>({
+  async poll(token: string): Promise<{ messages: HubMessage[] } | null> {
+    const res = await this.request<{ messages: HubMessage[] }>({
       method: "GET",
       path: "/poll",
       token,
@@ -166,31 +157,12 @@ export class HubClient {
     if (res.status !== 200) {
       throw new Error((res.data as { error?: string }).error ?? "Poll failed");
     }
+    await this.ackDeliveredMessages(token, res.data.messages);
     return res.data;
   }
 
-  async inbox(token: string): Promise<{
-    messages: Array<{
-      id: string;
-      from: string;
-      to: string;
-      content: string;
-      channel: string;
-      timestamp: number;
-      image?: { data: string; mimeType: string };
-    }>;
-  }> {
-    const res = await this.request<{
-      messages: Array<{
-        id: string;
-        from: string;
-        to: string;
-        content: string;
-        channel: string;
-        timestamp: number;
-        image?: { data: string; mimeType: string };
-      }>;
-    }>({
+  async inbox(token: string): Promise<{ messages: HubMessage[] }> {
+    const res = await this.request<{ messages: HubMessage[] }>({
       method: "GET",
       path: "/inbox",
       token,
@@ -198,7 +170,22 @@ export class HubClient {
     if (res.status !== 200) {
       throw new Error((res.data as { error?: string }).error ?? "Inbox fetch failed");
     }
+    await this.ackDeliveredMessages(token, res.data.messages);
     return res.data;
+  }
+
+  private async ackDeliveredMessages(token: string, messages: HubMessage[]): Promise<void> {
+    const deliveryIds = messages.map((message) => message.deliveryId).filter((id): id is string => Boolean(id));
+    if (deliveryIds.length === 0) return;
+    const res = await this.request<{ ok: boolean }>({
+      method: "POST",
+      path: "/ack",
+      token,
+      body: { deliveryIds },
+    });
+    if (res.status !== 200) {
+      throw new Error((res.data as { error?: string }).error ?? "Ack failed");
+    }
   }
 
   async users(token: string): Promise<HubUser[]> {

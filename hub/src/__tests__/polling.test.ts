@@ -5,7 +5,7 @@ import { registerUser, resetAuthState } from "../auth.js";
 import { initGeneralChannel, joinChannel, resetChannelState } from "../channels.js";
 import { initDB } from "../db.js";
 import { addPoll, closeAllPolls, removePoll } from "../polling.js";
-import { drainQueue, ensureQueue, routeMessage } from "../router.js";
+import { ackDeliveries, drainQueue, ensureQueue, peekQueue, routeMessage } from "../router.js";
 
 class FakeResponse {
   statusCode: number | null = null;
@@ -78,7 +78,13 @@ describe("poll delivery", () => {
     expect(JSON.parse(res.body)).toEqual({
       messages: [expect.objectContaining({ content: "queued", to: "bob" })],
     });
-    expect(drainQueue("bob")).toEqual([]);
+    const pending = peekQueue("bob");
+    expect(pending).toHaveLength(1);
+    ackDeliveries(
+      "bob",
+      pending.map((message) => message.deliveryId).filter((id): id is string => Boolean(id)),
+    );
+    expect(peekQueue("bob")).toEqual([]);
   });
 
   it("ends and removes a waiting connection on explicit removal", () => {

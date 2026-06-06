@@ -1,7 +1,7 @@
 import path from "node:path";
 import Database from "better-sqlite3";
 
-import type { Message, MessageImage } from "./types.js";
+import type { Message, MessageImage, UserRole } from "./types.js";
 
 export interface AgentConfigRow {
   id: string;
@@ -24,6 +24,21 @@ export interface ChannelMemberRow {
   user_name: string;
 }
 
+export interface UserRow {
+  name: string;
+  token: string;
+  role: UserRole;
+  registered_at: number;
+}
+
+export interface DeliveryRow {
+  id: string;
+  recipient: string;
+  message_json: string;
+  enqueued_at: number;
+  sequence: number;
+}
+
 let db: Database.Database;
 const DB_BUSY_TIMEOUT_MS = 5_000;
 const DB_SLOW_QUERY_MS = 50;
@@ -32,6 +47,7 @@ const MAX_CHANNEL_ROWS = 500;
 const MAX_AGENT_CONFIG_ROWS = 500;
 const MAX_USER_CHANNEL_ROWS = 500;
 const MAX_CHANNEL_MEMBER_ROWS = 10_000;
+const MAX_DELIVERY_QUEUE_ROWS = 500;
 
 function clampLimit(limit: number, fallback: number): number {
   if (!Number.isFinite(limit)) return fallback;
@@ -68,6 +84,15 @@ export function initDB(): void {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      name TEXT PRIMARY KEY,
+      token TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL,
+      registered_at INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       "from" TEXT NOT NULL,
@@ -76,6 +101,21 @@ export function initDB(): void {
       channel TEXT NOT NULL,
       timestamp INTEGER NOT NULL
     )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_queue (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      recipient TEXT NOT NULL,
+      message_json TEXT NOT NULL,
+      enqueued_at INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_delivery_queue_recipient_sequence
+    ON delivery_queue (recipient, sequence)
   `);
 
   db.exec(`
@@ -181,6 +221,23 @@ export function dbListChannelMembers(): ChannelMemberRow[] {
     .all(MAX_CHANNEL_MEMBER_ROWS) as ChannelMemberRow[];
 }
 
+export function dbSaveUser(name: string, token: string, role: UserRole, registeredAt: number): void {
+  db.prepare(
+    `INSERT INTO users (name, token, role, registered_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET token = excluded.token, role = excluded.role, registered_at = excluded.registered_at`,
+  ).run(name, token, role, registeredAt);
+}
+
+export function dbDeleteUser(name: string): void {
+  db.prepare("DELETE FROM users WHERE name = ?").run(name);
+}
+
+export function dbListUsers(): UserRow[] {
+  return db
+    .prepare("SELECT name, token, role, registered_at FROM users ORDER BY registered_at LIMIT ?")
+    .all(MAX_READ_LIMIT) as UserRow[];
+}
+
 const ALL_CHANNEL_MAX = 200;
 
 export function dbSaveMessage(msg: Message): void {
@@ -236,6 +293,57 @@ export function dbGetRecentMessages(limit = 200): Message[] {
 
 export function dbDeleteChannelMessages(channel: string): void {
   db.prepare("DELETE FROM messages WHERE channel = ?").run(channel);
+}
+
+export function dbEnqueueDelivery(id: string, recipient: string, message: Message): void {
+  db.prepare("INSERT INTO delivery_queue (id, recipient, message_json, enqueued_at) VALUES (?, ?, ?, ?)").run(
+    id,
+    recipient,
+    JSON.stringify(message),
+    Date.now(),
+  );
+  dbPruneDeliveryQueue(recipient);
+}
+
+export function dbListDeliveries(recipient: string, limit = MAX_DELIVERY_QUEUE_ROWS): DeliveryRow[] {
+  return db
+    .prepare(
+      "SELECT id, recipient, message_json, enqueued_at, sequence FROM delivery_queue WHERE recipient = ? ORDER BY sequence LIMIT ?",
+    )
+    .all(recipient, clampLimit(limit, MAX_DELIVERY_QUEUE_ROWS)) as DeliveryRow[];
+}
+
+export function dbAckDeliveries(recipient: string, deliveryIds: string[]): void {
+  if (deliveryIds.length === 0) return;
+  const placeholders = deliveryIds.map(() => "?").join(", ");
+  db.prepare(`DELETE FROM delivery_queue WHERE recipient = ? AND id IN (${placeholders})`).run(
+    recipient,
+    ...deliveryIds,
+  );
+}
+
+export function dbDeleteDeliveriesForRecipient(recipient: string): void {
+  db.prepare("DELETE FROM delivery_queue WHERE recipient = ?").run(recipient);
+}
+
+function dbPruneDeliveryQueue(recipient: string): void {
+  const result = db
+    .prepare(
+      `DELETE FROM delivery_queue
+       WHERE recipient = ?
+       AND id NOT IN (
+         SELECT id FROM delivery_queue
+         WHERE recipient = ?
+         ORDER BY sequence DESC
+         LIMIT ?
+       )`,
+    )
+    .run(recipient, recipient, MAX_DELIVERY_QUEUE_ROWS);
+  if (result.changes > 0) {
+    console.warn(
+      `[delivery] Dropped ${result.changes} oldest queued message(s) for ${recipient}; queue cap is ${MAX_DELIVERY_QUEUE_ROWS}`,
+    );
+  }
 }
 
 export function dbUpdateReadCursor(userName: string, channel: string, timestamp?: number): void {

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { drainQueue } from "./router.js";
+import { peekQueue } from "./router.js";
 import type { Message } from "./types.js";
 
 const POLL_TIMEOUT_MS = 3_600_000; // 1 hour
@@ -73,7 +73,7 @@ export function addPoll(userName: string, req: IncomingMessage, res: ServerRespo
     }
   });
 
-  const messages = drainQueue(userName);
+  const messages = peekQueue(userName);
   if (messages.length > 0) {
     deliverToWaitingConnection(userName, messages, "poll-immediate");
   }
@@ -81,7 +81,7 @@ export function addPoll(userName: string, req: IncomingMessage, res: ServerRespo
 
 export function deliverMessage(userName: string): void {
   if (!waiters.has(userName) || !connections.has(userName)) return;
-  const messages = drainQueue(userName);
+  const messages = peekQueue(userName);
   if (messages.length === 0) return;
   deliverToWaitingConnection(userName, messages, "poll-deliver");
 }

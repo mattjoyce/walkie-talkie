@@ -1,28 +1,51 @@
 import { randomUUID } from "node:crypto";
 import { getUserRole, getUsersByRole, isUserRegistered } from "./auth.js";
 import { getChannelMembers, isChannelMember } from "./channels.js";
-import { dbSaveMessage } from "./db.js";
+import {
+  dbAckDeliveries,
+  dbDeleteDeliveriesForRecipient,
+  dbEnqueueDelivery,
+  dbListDeliveries,
+  dbSaveMessage,
+} from "./db.js";
 import { deliverMessage } from "./polling.js";
 import type { Message, MessageImage } from "./types.js";
 
-const messageQueues = new Map<string, Message[]>();
+const DELIVERY_BATCH_LIMIT = 100;
 
 export function ensureQueue(name: string): void {
-  if (!messageQueues.has(name)) {
-    messageQueues.set(name, []);
-  }
+  void name;
 }
 
 export function removeQueue(name: string): void {
-  messageQueues.delete(name);
+  dbDeleteDeliveriesForRecipient(name);
 }
 
 export function drainQueue(name: string): Message[] {
-  const queue = messageQueues.get(name);
-  if (!queue || queue.length === 0) return [];
-  const messages = [...queue];
-  queue.length = 0;
+  const deliveries = dbListDeliveries(name, DELIVERY_BATCH_LIMIT);
+  const messages = deliveries.map((delivery) => parseDelivery(delivery.id, delivery.message_json));
+  ackDeliveries(
+    name,
+    messages.map((message) => message.deliveryId).filter((id): id is string => Boolean(id)),
+  );
   return messages;
+}
+
+export function peekQueue(name: string): Message[] {
+  return dbListDeliveries(name, DELIVERY_BATCH_LIMIT).map((delivery) =>
+    parseDelivery(delivery.id, delivery.message_json),
+  );
+}
+
+export function ackDeliveries(name: string, deliveryIds: string[]): void {
+  dbAckDeliveries(name, deliveryIds);
+}
+
+function parseDelivery(deliveryId: string, messageJson: string): Message {
+  return {
+    ...(JSON.parse(messageJson) as Message),
+    deliveryId,
+  };
 }
 
 export function routeMessage(
@@ -100,8 +123,7 @@ export function routeMessage(
 
 export function enqueueAndDeliver(targetName: string, message: Message): void {
   ensureQueue(targetName);
-  const queue = messageQueues.get(targetName)!;
-  queue.push(message);
+  dbEnqueueDelivery(randomUUID(), targetName, message);
   deliverMessage(targetName);
 }
 
