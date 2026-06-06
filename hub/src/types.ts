@@ -61,10 +61,4 @@ export interface ErrorResponse {
   error: string;
 }
 
-export type PendingPoll = {
-  userName: string;
-  res: ServerResponse;
-  timer: ReturnType<typeof setTimeout>;
-};
-
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse, userName?: string) => Promise<void>;

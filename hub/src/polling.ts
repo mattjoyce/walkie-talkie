@@ -1,9 +1,22 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { drainQueue } from "./router.js";
-import type { PendingPoll } from "./types.js";
+import type { Message } from "./types.js";
 
 const POLL_TIMEOUT_MS = 3_600_000; // 1 hour
-const pendingPolls = new Map<string, PendingPoll>();
+
+type Waiter = {
+  userName: string;
+  startedAt: number;
+  expiresAt: number;
+};
+
+type Connection = {
+  res: ServerResponse;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+const waiters = new Map<string, Waiter>();
+const connections = new Map<string, Connection>();
 
 // Track users explicitly detected as offline (poll connection dropped).
 // Registered users NOT in this set are considered online (default = online).
@@ -31,78 +44,90 @@ export function addPoll(userName: string, req: IncomingMessage, res: ServerRespo
   removePoll(userName);
 
   console.log(`[poll-start] ${userName} waiting for messages...`);
+  const startedAt = Date.now();
+  waiters.set(userName, {
+    userName,
+    startedAt,
+    expiresAt: startedAt + POLL_TIMEOUT_MS,
+  });
 
   const timer = setTimeout(() => {
-    pendingPolls.delete(userName);
+    waiters.delete(userName);
+    connections.delete(userName);
     console.log(`[poll-timeout] ${userName} (no messages after ${POLL_TIMEOUT_MS / 1000}s)`);
     res.writeHead(204);
     res.end();
   }, POLL_TIMEOUT_MS);
 
-  pendingPolls.set(userName, { userName, res, timer });
+  connections.set(userName, { res, timer });
 
   // Detect unexpected connection drop (agent crash, network loss).
   // Listen on req (not res) — more reliable when no response has been written yet.
   req.on("close", () => {
-    if (!res.writableEnded && pendingPolls.has(userName)) {
+    if (!res.writableEnded && waiters.has(userName)) {
       console.log(`[poll-disconnect] ${userName} connection dropped`);
       clearTimeout(timer);
-      pendingPolls.delete(userName);
+      waiters.delete(userName);
+      connections.delete(userName);
       onDisconnectCallback?.(userName);
     }
   });
 
-  // Check if there are already queued messages
   const messages = drainQueue(userName);
   if (messages.length > 0) {
-    clearTimeout(timer);
-    pendingPolls.delete(userName);
-    console.log(`[poll-immediate] ${userName} <- ${messages.length} queued message(s)`);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ messages }));
+    deliverToWaitingConnection(userName, messages, "poll-immediate");
   }
 }
 
 export function deliverMessage(userName: string): void {
-  const poll = pendingPolls.get(userName);
-  if (!poll) return;
-
+  if (!waiters.has(userName) || !connections.has(userName)) return;
   const messages = drainQueue(userName);
   if (messages.length === 0) return;
+  deliverToWaitingConnection(userName, messages, "poll-deliver");
+}
 
-  clearTimeout(poll.timer);
-  pendingPolls.delete(userName);
+function deliverToWaitingConnection(userName: string, messages: Message[], logLabel: string): boolean {
+  if (!waiters.has(userName)) return false;
+  const connection = connections.get(userName);
+  if (!connection) return false;
+
+  clearTimeout(connection.timer);
+  waiters.delete(userName);
+  connections.delete(userName);
 
   for (const m of messages) {
     if (m.image) {
-      console.log(`[poll-deliver] ${userName} <- image (${m.image.mimeType}, ${m.image.data.length} chars base64)`);
+      console.log(`[${logLabel}] ${userName} <- image (${m.image.mimeType}, ${m.image.data.length} chars base64)`);
     }
   }
-  console.log(`[poll-deliver] ${userName} <- ${messages.length} message(s)`);
+  console.log(`[${logLabel}] ${userName} <- ${messages.length} message(s)`);
 
-  poll.res.writeHead(200, { "Content-Type": "application/json" });
-  poll.res.end(JSON.stringify({ messages }));
+  connection.res.writeHead(200, { "Content-Type": "application/json" });
+  connection.res.end(JSON.stringify({ messages }));
+  return true;
 }
 
 export function closeAllPolls(): void {
-  for (const [, poll] of pendingPolls) {
-    clearTimeout(poll.timer);
-    if (!poll.res.writableEnded) {
-      poll.res.writeHead(204);
-      poll.res.end();
+  for (const [, connection] of connections) {
+    clearTimeout(connection.timer);
+    if (!connection.res.writableEnded) {
+      connection.res.writeHead(204);
+      connection.res.end();
     }
   }
-  pendingPolls.clear();
+  waiters.clear();
+  connections.clear();
 }
 
 export function removePoll(userName: string): void {
-  const poll = pendingPolls.get(userName);
-  if (poll) {
-    clearTimeout(poll.timer);
-    pendingPolls.delete(userName);
-    if (!poll.res.writableEnded) {
-      poll.res.writeHead(204);
-      poll.res.end();
+  const connection = connections.get(userName);
+  waiters.delete(userName);
+  connections.delete(userName);
+  if (connection) {
+    clearTimeout(connection.timer);
+    if (!connection.res.writableEnded) {
+      connection.res.writeHead(204);
+      connection.res.end();
     }
   }
 }
