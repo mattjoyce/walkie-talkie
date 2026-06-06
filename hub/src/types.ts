@@ -23,6 +23,7 @@ export interface User {
   token: string;
   role: UserRole;
   registeredAt: number;
+  epoch: number;
 }
 
 export interface RegisterRequest {
@@ -66,4 +67,9 @@ export interface ErrorResponse {
   error: string;
 }
 
-export type RouteHandler = (req: IncomingMessage, res: ServerResponse, userName?: string) => Promise<void>;
+export type RouteHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  userName?: string,
+  sessionEpoch?: number,
+) => Promise<void>;

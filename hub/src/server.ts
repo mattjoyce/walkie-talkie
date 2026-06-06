@@ -3,8 +3,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import {
   authenticateRequest,
   getRegisteredUsers,
+  getSessionEpoch,
   getUserRole,
   getUserToken,
+  isCurrentSession,
   isUserRegistered,
   registerUser,
   unregisterUser,
@@ -62,6 +64,22 @@ const LIVENESS_STALE_MS = 45_000;
 const MAX_ACK_DELIVERY_IDS = 500;
 const dashboardSessions = new Map<string, number>();
 const lastSeenByUser = new Map<string, number>();
+const STALE_GRACE_MS = 30_000; // 30 seconds before auto-unregister
+const staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearGraceTimer(name: string): void {
+  const graceTimer = staleTimers.get(name);
+  if (graceTimer) {
+    clearTimeout(graceTimer);
+    staleTimers.delete(name);
+  }
+}
+
+export function clearAllGraceTimers(): void {
+  for (const name of staleTimers.keys()) {
+    clearGraceTimer(name);
+  }
+}
 
 class RequestError extends Error {
   constructor(
@@ -115,6 +133,14 @@ function sendError(res: ServerResponse, status: number, message: string): void {
   sendJson(res, status, { error: message });
 }
 
+function rejectStaleSession(res: ServerResponse, userName: string | undefined, sessionEpoch: number | undefined): boolean {
+  if (!userName || !isCurrentSession(userName, sessionEpoch)) {
+    sendError(res, 401, "Unauthorized");
+    return true;
+  }
+  return false;
+}
+
 function handleRouteError(res: ServerResponse, err: unknown): void {
   if (err instanceof RequestError) {
     sendError(res, err.status, err.message);
@@ -158,11 +184,7 @@ const handleRegister: RouteHandler = async (req, res) => {
       unregisterUser(body.name, { preserveMemberships: true });
     }
     // Cancel grace timer if reconnecting
-    const graceTimer = staleTimers.get(body.name);
-    if (graceTimer) {
-      clearTimeout(graceTimer);
-      staleTimers.delete(body.name);
-    }
+    clearGraceTimer(body.name);
     const role = body.role === "bridge" ? "bridge" : "agent";
     const user = registerUser(body.name, role);
     lastSeenByUser.set(body.name, Date.now());
@@ -210,8 +232,9 @@ const handleRegister: RouteHandler = async (req, res) => {
   }
 };
 
-const handleSend: RouteHandler = async (req, res, userName) => {
+const handleSend: RouteHandler = async (req, res, userName, sessionEpoch) => {
   const body = await readJson<SendRequest>(req);
+  if (rejectStaleSession(res, userName, sessionEpoch)) return;
   if (!body.to || (!body.content && !body.image)) {
     return sendError(res, 400, "Missing 'to' or 'content' field");
   }
@@ -249,8 +272,9 @@ const handleInbox: RouteHandler = async (_req, res, userName) => {
   sendJson(res, 200, { messages });
 };
 
-const handleAck: RouteHandler = async (req, res, userName) => {
+const handleAck: RouteHandler = async (req, res, userName, sessionEpoch) => {
   const body = await readJson<AckRequest>(req);
+  if (rejectStaleSession(res, userName, sessionEpoch)) return;
   if (
     !Array.isArray(body.deliveryIds) ||
     body.deliveryIds.length > MAX_ACK_DELIVERY_IDS ||
@@ -311,6 +335,7 @@ const handleUnregister: RouteHandler = async (_req, res, userName) => {
   removePoll(userName!);
   removeQueue(userName!);
   lastSeenByUser.delete(userName!);
+  clearGraceTimer(userName!);
   unregisterUser(userName!);
   broadcast({ type: "leave", name: userName!, timestamp: Date.now() });
   if (role === "agent") {
@@ -336,6 +361,7 @@ function kickUser(name: string): boolean {
   removePoll(name);
   removeQueue(name);
   lastSeenByUser.delete(name);
+  clearGraceTimer(name);
   unregisterUser(name);
   broadcast({ type: "leave", name, timestamp: Date.now() });
   if (role === "agent") {
@@ -421,8 +447,9 @@ const handleAdminSend: RouteHandler = async (req, res) => {
 };
 
 // Channel endpoints
-const handleChannelCreate: RouteHandler = async (req, res, userName) => {
+const handleChannelCreate: RouteHandler = async (req, res, userName, sessionEpoch) => {
   const body = await readJson<{ name?: string }>(req);
+  if (rejectStaleSession(res, userName, sessionEpoch)) return;
   if (!body.name || typeof body.name !== "string") {
     return sendError(res, 400, "Missing or invalid 'name' field");
   }
@@ -444,8 +471,9 @@ const handleChannelCreate: RouteHandler = async (req, res, userName) => {
   }
 };
 
-const handleChannelJoin: RouteHandler = async (req, res, userName) => {
+const handleChannelJoin: RouteHandler = async (req, res, userName, sessionEpoch) => {
   const body = await readJson<{ channel?: string }>(req);
+  if (rejectStaleSession(res, userName, sessionEpoch)) return;
   if (!body.channel || typeof body.channel !== "string") {
     return sendError(res, 400, "Missing or invalid 'channel' field");
   }
@@ -459,8 +487,9 @@ const handleChannelJoin: RouteHandler = async (req, res, userName) => {
   }
 };
 
-const handleChannelLeave: RouteHandler = async (req, res, userName) => {
+const handleChannelLeave: RouteHandler = async (req, res, userName, sessionEpoch) => {
   const body = await readJson<{ channel?: string }>(req);
+  if (rejectStaleSession(res, userName, sessionEpoch)) return;
   if (!body.channel || typeof body.channel !== "string") {
     return sendError(res, 400, "Missing or invalid 'channel' field");
   }
@@ -473,8 +502,9 @@ const handleChannelLeave: RouteHandler = async (req, res, userName) => {
   sendJson(res, 200, { ok: true, channel: body.channel });
 };
 
-const handleChannelInvite: RouteHandler = async (req, res, userName) => {
+const handleChannelInvite: RouteHandler = async (req, res, userName, sessionEpoch) => {
   const body = await readJson<{ channel?: string; user?: string }>(req);
+  if (rejectStaleSession(res, userName, sessionEpoch)) return;
   if (!body.channel || typeof body.channel !== "string") {
     return sendError(res, 400, "Missing or invalid 'channel' field");
   }
@@ -780,9 +810,6 @@ function authenticateDashboardSession(req: IncomingMessage): boolean {
   return true;
 }
 
-const STALE_GRACE_MS = 30_000; // 30 seconds before auto-unregister
-const staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
 export function createHubServer(port: number, adminToken: string, joinToken: string): import("node:http").Server {
   // When a poll connection drops unexpectedly, mark user offline and start grace timer
   onPollDisconnect((userName) => {
@@ -791,15 +818,15 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
     broadcast({ type: "status", name: userName, online: false, timestamp: Date.now() });
     console.log(`[offline] ${userName} (grace period ${STALE_GRACE_MS / 1000}s)`);
 
-    // Clear any existing grace timer
-    const existing = staleTimers.get(userName);
-    if (existing) clearTimeout(existing);
+    clearGraceTimer(userName);
+    const sessionEpoch = getSessionEpoch(userName);
+    if (sessionEpoch === null) return;
 
     staleTimers.set(
       userName,
       setTimeout(() => {
         staleTimers.delete(userName);
-        if (isUserRegistered(userName) && !isOnline(userName)) {
+        if (isUserRegistered(userName) && !isOnline(userName) && isCurrentSession(userName, sessionEpoch)) {
           const role = getUserRole(userName);
           removePoll(userName);
           removeQueue(userName);
@@ -909,13 +936,18 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
         sendError(res, 401, "Unauthorized");
         return;
       }
+      const sessionEpoch = getSessionEpoch(userName);
+      if (sessionEpoch === null) {
+        sendError(res, 401, "Unauthorized");
+        return;
+      }
       // Any authenticated request proves the agent is alive
       if (!isOnline(userName)) {
         setOnline(userName);
         broadcast({ type: "status", name: userName, online: true, timestamp: Date.now() });
       }
       lastSeenByUser.set(userName, Date.now());
-      protectedRoute.handler(req, res, userName).catch((e) => {
+      protectedRoute.handler(req, res, userName, sessionEpoch).catch((e) => {
         handleRouteError(res, e);
       });
       return;

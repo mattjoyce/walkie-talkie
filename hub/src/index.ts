@@ -7,7 +7,7 @@ import { closeAllSSEClients } from "./events.js";
 import { autoLaunchAgents } from "./launcher.js";
 import { closeAllPolls } from "./polling.js";
 import { enqueueAndDeliver, ensureQueue } from "./router.js";
-import { createHubServer } from "./server.js";
+import { clearAllGraceTimers, createHubServer } from "./server.js";
 
 const port = parseInt(process.env.PORT ?? "9559", 10);
 
@@ -62,6 +62,7 @@ function handleShutdown(exitCode = 0): void {
       timestamp: Date.now(),
     });
   }
+  clearAllGraceTimers();
   closeAllSSEClients();
   closeAllPolls();
   server.close(() => {

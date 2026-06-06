@@ -3,7 +3,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { IncomingMessage } from "node:http";
 import { beforeEach, describe, expect, it } from "vitest";
-import { authenticateRequest, loadUsersFromDB, registerUser, resetAuthState } from "../auth.js";
+import {
+  authenticateRequest,
+  getSessionEpoch,
+  isCurrentSession,
+  loadUsersFromDB,
+  registerUser,
+  resetAuthState,
+  unregisterUser,
+} from "../auth.js";
 import { initGeneralChannel, joinChannel, loadMembershipFromDB, resetChannelState } from "../channels.js";
 import { initDB } from "../db.js";
 import { ensureQueue, peekQueue, routeMessage } from "../router.js";
@@ -33,6 +41,20 @@ describe("durable auth and delivery", () => {
     loadUsersFromDB();
 
     expect(authenticateRequest(authReq(user.token))).toBe("alice");
+  });
+
+  it("advances session epoch on re-registration", () => {
+    registerUser("alice");
+    const firstEpoch = getSessionEpoch("alice");
+    expect(firstEpoch).toBeGreaterThan(0);
+
+    unregisterUser("alice");
+    registerUser("alice");
+    const secondEpoch = getSessionEpoch("alice");
+
+    expect(secondEpoch).toBeGreaterThan(firstEpoch!);
+    expect(isCurrentSession("alice", firstEpoch!)).toBe(false);
+    expect(isCurrentSession("alice", secondEpoch!)).toBe(true);
   });
 
   it("keeps undelivered messages across DB reinitialization", () => {

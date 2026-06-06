@@ -29,6 +29,7 @@ export interface UserRow {
   token: string;
   role: UserRole;
   registered_at: number;
+  epoch: number;
 }
 
 export interface DeliveryRow {
@@ -88,9 +89,16 @@ export function initDB(): void {
       name TEXT PRIMARY KEY,
       token TEXT NOT NULL UNIQUE,
       role TEXT NOT NULL,
-      registered_at INTEGER NOT NULL
+      registered_at INTEGER NOT NULL,
+      epoch INTEGER NOT NULL DEFAULT 0
     )
   `);
+
+  try {
+    db.exec("ALTER TABLE users ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    /* column already exists */
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
@@ -221,11 +229,15 @@ export function dbListChannelMembers(): ChannelMemberRow[] {
     .all(MAX_CHANNEL_MEMBER_ROWS) as ChannelMemberRow[];
 }
 
-export function dbSaveUser(name: string, token: string, role: UserRole, registeredAt: number): void {
+export function dbSaveUser(name: string, token: string, role: UserRole, registeredAt: number, epoch: number): void {
   db.prepare(
-    `INSERT INTO users (name, token, role, registered_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(name) DO UPDATE SET token = excluded.token, role = excluded.role, registered_at = excluded.registered_at`,
-  ).run(name, token, role, registeredAt);
+    `INSERT INTO users (name, token, role, registered_at, epoch) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET
+       token = excluded.token,
+       role = excluded.role,
+       registered_at = excluded.registered_at,
+       epoch = excluded.epoch`,
+  ).run(name, token, role, registeredAt, epoch);
 }
 
 export function dbDeleteUser(name: string): void {
@@ -234,7 +246,7 @@ export function dbDeleteUser(name: string): void {
 
 export function dbListUsers(): UserRow[] {
   return db
-    .prepare("SELECT name, token, role, registered_at FROM users ORDER BY registered_at LIMIT ?")
+    .prepare("SELECT name, token, role, registered_at, epoch FROM users ORDER BY registered_at LIMIT ?")
     .all(MAX_READ_LIMIT) as UserRow[];
 }
 
