@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { registerUser, resetAuthState } from "../auth.js";
 import { initGeneralChannel, joinChannel, resetChannelState } from "../channels.js";
-import { dbCreateChannel, initDB } from "../db.js";
+import { dbCreateChannel, dbGetChannelMessages, initDB } from "../db.js";
 import { drainQueue, ensureQueue, removeQueue, routeMessage } from "../router.js";
 
 beforeEach(() => {
@@ -85,6 +85,19 @@ describe("routeMessage", () => {
     // bob not joined to #all
 
     expect(() => routeMessage("alice", "@bob", "hi")).toThrow("not a member");
+  });
+
+  it("should reject @all broadcasts from non-members before queueing or saving", () => {
+    registerUser("alice");
+    registerUser("bob");
+    ensureQueue("alice");
+    ensureQueue("bob");
+    dbCreateChannel("#room", "alice");
+    joinChannel("#room", "bob");
+
+    expect(() => routeMessage("alice", "@all", "room msg", "#room")).toThrow('User "alice" is not a member of #room');
+    expect(drainQueue("bob")).toEqual([]);
+    expect(dbGetChannelMessages("#room")).toEqual([]);
   });
 
   it("should route messages in custom channels", () => {

@@ -35,6 +35,14 @@ export function routeMessage(
   const members = getChannelMembers(channel);
 
   if (to === "@all") {
+    if (!isUserRegistered(from)) {
+      throw new Error(`User "${from}" is not connected`);
+    }
+
+    if (!isChannelMember(channel, from)) {
+      throw new Error(`User "${from}" is not a member of ${channel}`);
+    }
+
     const message: Message = {
       id: randomUUID(),
       from,
