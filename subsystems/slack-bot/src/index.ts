@@ -138,6 +138,10 @@ interface HubMessage {
   content: string;
   channel: string;
   timestamp: number;
+  image?: {
+    data: string;
+    mimeType: string;
+  };
 }
 
 interface HubUser {
@@ -230,6 +234,14 @@ function formatSystemMessage(content: string): string | null {
   return null;
 }
 
+function formatSlackReply(msg: HubMessage): string {
+  const body = msg.content.trim() || "(no text)";
+  const imageNotice = msg.image
+    ? `\n\n[image attached: ${msg.image.mimeType}, ${msg.image.data.length} base64 chars; Slack bridge cannot upload images yet]`
+    : "";
+  return `*@@${msg.from}*:\n${body}${imageNotice}`;
+}
+
 // ---------------------------------------------------------------------------
 // Poll loop — receives messages from Hub and posts to Slack
 // ---------------------------------------------------------------------------
@@ -276,11 +288,12 @@ async function pollLoop(): Promise<void> {
           await slackApp.client.chat.postMessage({
             channel: pending.slackChannel,
             thread_ts: pending.threadTs,
-            text: `*@@${msg.from}*:\n${msg.content}`,
+            text: formatSlackReply(msg),
           });
         } else {
           // No pending reply — post as a new message to a default channel if configured
-          console.log(`[hub] Unmatched message from ${msg.from}: ${msg.content.slice(0, 100)}`);
+          const imageTag = msg.image ? ` [image attached: ${msg.image.mimeType}]` : "";
+          console.log(`[hub] Unmatched message from ${msg.from}: ${msg.content.slice(0, 100)}${imageTag}`);
         }
       }
     } catch (e) {
