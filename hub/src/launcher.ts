@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { AgentConfigRow } from "./db.js";
 import { dbListAgentConfigs } from "./db.js";
 
+const LAUNCH_TIMEOUT_MS = 30_000;
+
 let windowOpened = false;
 
 function escapeAppleScript(s: string): string {
@@ -29,25 +31,32 @@ exec $SHELL
 }
 
 function openInITerm(config: AgentConfigRow): Promise<void> {
-  const scriptPath = createLaunchScript(config);
-  const escapedPath = escapeAppleScript(scriptPath);
-
-  const script = windowOpened
-    ? [
-        'tell application "iTerm2"',
-        "  tell current window",
-        "    tell current session of current tab",
-        `      set newSession to (split vertically with default profile command "${escapedPath}")`,
-        "    end tell",
-        "  end tell",
-        "end tell",
-      ].join("\n")
-    : ['tell application "iTerm2"', `  create window with default profile command "${escapedPath}"`, "end tell"].join(
-        "\n",
-      );
-
   return new Promise((resolve, reject) => {
-    execFile("osascript", ["-e", script], (err) => {
+    let script: string;
+    try {
+      const scriptPath = createLaunchScript(config);
+      const escapedPath = escapeAppleScript(scriptPath);
+      script = windowOpened
+        ? [
+            'tell application "iTerm2"',
+            "  tell current window",
+            "    tell current session of current tab",
+            `      set newSession to (split vertically with default profile command "${escapedPath}")`,
+            "    end tell",
+            "  end tell",
+            "end tell",
+          ].join("\n")
+        : [
+            'tell application "iTerm2"',
+            `  create window with default profile command "${escapedPath}"`,
+            "end tell",
+          ].join("\n");
+    } catch (e) {
+      reject(new Error(`Failed to create launch script: ${(e as Error).message}`));
+      return;
+    }
+
+    execFile("osascript", ["-e", script], { timeout: LAUNCH_TIMEOUT_MS }, (err) => {
       if (err) {
         console.error(`[launcher] Failed to open iTerm2 for ${config.name}: ${err.message}`);
         reject(new Error(`Failed to open iTerm2: ${err.message}`));
@@ -75,4 +84,7 @@ export function autoLaunchAgents(): void {
       return openInITerm(config);
     });
   }
+  chain.catch((e) => {
+    console.error(`[auto-launch] Failed: ${(e as Error).message}`);
+  });
 }
