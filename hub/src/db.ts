@@ -19,6 +19,11 @@ export interface ChannelRow {
   created_at: number;
 }
 
+export interface ChannelMemberRow {
+  channel: string;
+  user_name: string;
+}
+
 let db: Database.Database;
 const DB_BUSY_TIMEOUT_MS = 5_000;
 const DB_SLOW_QUERY_MS = 50;
@@ -26,6 +31,7 @@ const MAX_READ_LIMIT = 500;
 const MAX_CHANNEL_ROWS = 500;
 const MAX_AGENT_CONFIG_ROWS = 500;
 const MAX_USER_CHANNEL_ROWS = 500;
+const MAX_CHANNEL_MEMBER_ROWS = 10_000;
 
 function clampLimit(limit: number, fallback: number): number {
   if (!Number.isFinite(limit)) return fallback;
@@ -156,6 +162,10 @@ export function dbRemoveAllMembersOfChannel(channel: string): void {
   db.prepare("DELETE FROM channel_members WHERE channel = ?").run(channel);
 }
 
+export function dbRemoveUserFromAllChannels(userName: string): void {
+  db.prepare("DELETE FROM channel_members WHERE user_name = ?").run(userName);
+}
+
 export function dbGetUserChannels(userName: string): string[] {
   const rows = db
     .prepare("SELECT channel FROM channel_members WHERE user_name = ? LIMIT ?")
@@ -163,6 +173,12 @@ export function dbGetUserChannels(userName: string): string[] {
     channel: string;
   }[];
   return rows.map((r) => r.channel);
+}
+
+export function dbListChannelMembers(): ChannelMemberRow[] {
+  return db
+    .prepare("SELECT channel, user_name FROM channel_members ORDER BY channel, user_name LIMIT ?")
+    .all(MAX_CHANNEL_MEMBER_ROWS) as ChannelMemberRow[];
 }
 
 const ALL_CHANNEL_MAX = 200;

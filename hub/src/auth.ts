@@ -21,12 +21,14 @@ export function registerUser(name: string, role: UserRole = "agent"): User {
   return user;
 }
 
-export function unregisterUser(name: string): void {
+export function unregisterUser(name: string, options: { preserveMemberships?: boolean } = {}): void {
   const user = users.get(name);
   if (user) {
     tokenToName.delete(user.token);
     users.delete(name);
-    removeUserFromAllChannels(name);
+    if (!options.preserveMemberships) {
+      removeUserFromAllChannels(name);
+    }
   }
 }
 

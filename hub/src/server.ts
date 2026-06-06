@@ -147,7 +147,7 @@ const handleRegister: RouteHandler = async (req, res) => {
       }
       removePoll(body.name);
       removeQueue(body.name);
-      unregisterUser(body.name);
+      unregisterUser(body.name, { preserveMemberships: true });
     }
     // Cancel grace timer if reconnecting
     const graceTimer = staleTimers.get(body.name);

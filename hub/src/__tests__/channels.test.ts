@@ -7,11 +7,12 @@ import {
   isChannelMember,
   joinChannel,
   leaveChannel,
+  loadMembershipFromDB,
   removeChannel,
   removeUserFromAllChannels,
   resetChannelState,
 } from "../channels.js";
-import { dbCreateChannel, initDB } from "../db.js";
+import { dbCreateChannel, dbGetUserChannels, initDB } from "../db.js";
 
 beforeEach(() => {
   process.env.WALKIE_TALKIE_DB_PATH = ":memory:";
@@ -51,13 +52,43 @@ describe("isChannelMember", () => {
 });
 
 describe("removeUserFromAllChannels", () => {
-  it("should remove user from every channel", () => {
+  it("should remove user from every channel in the cache and DB", () => {
     dbCreateChannel("#room", "alice");
     joinChannel("#all", "alice");
     joinChannel("#room", "alice");
     removeUserFromAllChannels("alice");
     expect(isChannelMember("#all", "alice")).toBe(false);
     expect(isChannelMember("#room", "alice")).toBe(false);
+    expect(dbGetUserChannels("alice")).toEqual([]);
+  });
+
+  it("should not resurrect removed memberships after cache rebuild", () => {
+    dbCreateChannel("#room", "alice");
+    joinChannel("#room", "alice");
+    removeUserFromAllChannels("alice");
+    resetChannelState();
+    loadMembershipFromDB();
+    expect(isChannelMember("#room", "alice")).toBe(false);
+  });
+});
+
+describe("loadMembershipFromDB", () => {
+  it("should rebuild the membership cache from DB rows", () => {
+    dbCreateChannel("#room", "alice");
+    joinChannel("#all", "alice");
+    joinChannel("#room", "alice");
+    resetChannelState();
+    expect(getChannelMembers("#all")).toEqual([]);
+    loadMembershipFromDB();
+    expect(getChannelMembers("#all")).toContain("alice");
+    expect(getChannelMembers("#room")).toContain("alice");
+  });
+
+  it("should retain empty channel entries for channels with no members", () => {
+    dbCreateChannel("#empty", "alice");
+    resetChannelState();
+    loadMembershipFromDB();
+    expect(getChannelMembers("#empty")).toEqual([]);
   });
 });
 

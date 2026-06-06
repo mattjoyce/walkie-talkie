@@ -15,9 +15,11 @@ import {
   dbGetUnreadCounts,
   dbGetUserChannels,
   dbListAgentConfigs,
+  dbListChannelMembers,
   dbListChannels,
   dbRemoveAllMembersOfChannel,
   dbRemoveChannelMember,
+  dbRemoveUserFromAllChannels,
   dbSaveMessage,
   dbUpdateAgentConfig,
   dbUpdateReadCursor,
@@ -101,6 +103,26 @@ describe("channel members", () => {
     dbRemoveAllMembersOfChannel("#room");
     expect(dbGetUserChannels("alice")).not.toContain("#room");
     expect(dbGetUserChannels("bob")).not.toContain("#room");
+  });
+
+  it("should list channel members", () => {
+    dbCreateChannel("#room", "alice");
+    dbAddChannelMember("#room", "alice");
+    dbAddChannelMember("#all", "bob");
+    expect(dbListChannelMembers()).toEqual(
+      expect.arrayContaining([
+        { channel: "#all", user_name: "bob" },
+        { channel: "#room", user_name: "alice" },
+      ]),
+    );
+  });
+
+  it("should remove a user from every channel", () => {
+    dbCreateChannel("#room", "alice");
+    dbAddChannelMember("#all", "alice");
+    dbAddChannelMember("#room", "alice");
+    dbRemoveUserFromAllChannels("alice");
+    expect(dbGetUserChannels("alice")).toEqual([]);
   });
 });
 

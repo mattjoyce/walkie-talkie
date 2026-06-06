@@ -1,11 +1,40 @@
-import { dbAddChannelMember, dbGetChannel, dbRemoveAllMembersOfChannel, dbRemoveChannelMember } from "./db.js";
+import {
+  dbAddChannelMember,
+  dbGetChannel,
+  dbListChannels,
+  dbListChannelMembers,
+  dbRemoveAllMembersOfChannel,
+  dbRemoveChannelMember,
+  dbRemoveUserFromAllChannels,
+} from "./db.js";
 
+// Rebuildable projection of the channel_members table. Writes go through the DB first.
 const channelMembers = new Map<string, Set<string>>();
 
-export function initGeneralChannel(): void {
-  if (!channelMembers.has("#all")) {
-    channelMembers.set("#all", new Set());
+function ensureCachedChannel(channel: string): Set<string> {
+  let members = channelMembers.get(channel);
+  if (!members) {
+    members = new Set();
+    channelMembers.set(channel, members);
   }
+  return members;
+}
+
+export function loadMembershipFromDB(): void {
+  channelMembers.clear();
+  const channels = new Set<string>();
+  for (const channel of dbListChannels()) {
+    channels.add(channel.name);
+    ensureCachedChannel(channel.name);
+  }
+  for (const member of dbListChannelMembers()) {
+    if (!channels.has(member.channel)) continue;
+    ensureCachedChannel(member.channel).add(member.user_name);
+  }
+}
+
+export function initGeneralChannel(): void {
+  loadMembershipFromDB();
 }
 
 export function joinChannel(channel: string, userName: string): void {
@@ -13,24 +42,20 @@ export function joinChannel(channel: string, userName: string): void {
   if (!dbChannel) {
     throw new Error(`Channel "${channel}" does not exist`);
   }
-  let members = channelMembers.get(channel);
-  if (!members) {
-    members = new Set();
-    channelMembers.set(channel, members);
-  }
-  members.add(userName);
   dbAddChannelMember(channel, userName);
+  ensureCachedChannel(channel).add(userName);
 }
 
 export function leaveChannel(channel: string, userName: string): void {
+  dbRemoveChannelMember(channel, userName);
   const members = channelMembers.get(channel);
   if (members) {
     members.delete(userName);
   }
-  dbRemoveChannelMember(channel, userName);
 }
 
 export function removeUserFromAllChannels(userName: string): void {
+  dbRemoveUserFromAllChannels(userName);
   for (const members of channelMembers.values()) {
     members.delete(userName);
   }
@@ -65,9 +90,7 @@ export function getChannelMemberCounts(): Map<string, number> {
 }
 
 export function ensureChannelMembership(channel: string): void {
-  if (!channelMembers.has(channel)) {
-    channelMembers.set(channel, new Set());
-  }
+  ensureCachedChannel(channel);
 }
 
 export function removeChannel(channel: string): void {

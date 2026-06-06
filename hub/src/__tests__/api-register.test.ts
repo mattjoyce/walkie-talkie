@@ -57,6 +57,35 @@ describe("POST /register", () => {
     expect(body.token).toBeTruthy();
   });
 
+  it("should preserve channel memberships during old-token reconnect", async () => {
+    const token = await registerUser(ctx, "reg-reconnect-channel");
+    await fetch(`${ctx.baseUrl}/channel-create`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ name: "reconnect-room" }),
+    });
+
+    const reconnectRes = await fetch(`${ctx.baseUrl}/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ctx.joinToken}`,
+      },
+      body: JSON.stringify({ name: "reg-reconnect-channel", oldToken: token }),
+    });
+    expect(reconnectRes.status).toBe(200);
+
+    const channelsRes = await fetch(`${ctx.baseUrl}/channels`);
+    const channelsBody = (await channelsRes.json()) as {
+      channels: { name: string; members: string[] }[];
+    };
+    const room = channelsBody.channels.find((channel) => channel.name === "#reconnect-room");
+    expect(room?.members).toContain("reg-reconnect-channel");
+  });
+
   it("should reject reconnect with wrong old token", async () => {
     await registerUser(ctx, "reg-wrongtoken");
     const res = await fetch(`${ctx.baseUrl}/register`, {
