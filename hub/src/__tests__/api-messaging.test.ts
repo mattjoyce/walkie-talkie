@@ -109,6 +109,46 @@ describe("POST /send", () => {
     expect(body.id).toBeTruthy();
   });
 
+  it("should reject invalid image payloads", async () => {
+    const token = await registerUser(ctx, "img-invalid-sender");
+    await registerUser(ctx, "img-invalid-receiver");
+
+    const res = await fetch(`${ctx.baseUrl}/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        to: "@all",
+        image: { data: "iVBORw0KGgo=", mimeType: "text/plain" },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: "Image mimeType must start with image/" });
+  });
+
+  it("should reject oversized images before routing", async () => {
+    const token = await registerUser(ctx, "img-large-sender");
+    await registerUser(ctx, "img-large-receiver");
+    const tooLargeImage = Buffer.alloc(5 * 1024 * 1024 + 1).toString("base64");
+
+    const res = await fetch(`${ctx.baseUrl}/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        to: "@all",
+        image: { data: tooLargeImage, mimeType: "image/png" },
+      }),
+    });
+
+    expect(res.status).toBe(413);
+  });
+
   it("should accept image-only message without content", async () => {
     const token = await registerUser(ctx, "imgonly-sender");
     await registerUser(ctx, "imgonly-receiver");

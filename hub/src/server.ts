@@ -41,17 +41,55 @@ import { addSSEClient, broadcast } from "./events.js";
 import { launchAgent } from "./launcher.js";
 import { addPoll, isOnline, onPollDisconnect, removePoll, setOffline, setOnline } from "./polling.js";
 import { drainQueue, enqueueAndDeliver, ensureQueue, notifyBridges, removeQueue, routeMessage } from "./router.js";
-import type { RegisterRequest, RouteHandler, SendRequest } from "./types.js";
+import type { MessageImage, RegisterRequest, RouteHandler, SendRequest } from "./types.js";
 
 const AGENT_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const REQUEST_TIMEOUT_MS = 30_000;
+const HEADERS_TIMEOUT_MS = 10_000;
+
+class RequestError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
+    let totalBytes = 0;
+    let settled = false;
+    req.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        settled = true;
+        req.resume();
+        reject(new RequestError(413, `Request body exceeds ${MAX_BODY_BYTES} byte limit`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString());
+    });
     req.on("error", reject);
   });
+}
+
+async function readJson<T>(req: IncomingMessage): Promise<T> {
+  const raw = await readBody(req);
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new RequestError(400, "Invalid JSON");
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
@@ -63,8 +101,35 @@ function sendError(res: ServerResponse, status: number, message: string): void {
   sendJson(res, status, { error: message });
 }
 
+function handleRouteError(res: ServerResponse, err: unknown): void {
+  if (err instanceof RequestError) {
+    sendError(res, err.status, err.message);
+    return;
+  }
+  sendError(res, 500, (err as Error).message);
+}
+
+function validateImagePayload(image: unknown): MessageImage | undefined {
+  if (image === undefined) return undefined;
+  if (!image || typeof image !== "object") {
+    throw new RequestError(400, "Invalid image payload");
+  }
+  const candidate = image as { data?: unknown; mimeType?: unknown };
+  if (typeof candidate.data !== "string" || typeof candidate.mimeType !== "string") {
+    throw new RequestError(400, "Invalid image payload");
+  }
+  if (!candidate.mimeType.startsWith("image/")) {
+    throw new RequestError(400, "Image mimeType must start with image/");
+  }
+  const decodedBytes = Buffer.byteLength(candidate.data, "base64");
+  if (decodedBytes > MAX_IMAGE_BYTES) {
+    throw new RequestError(413, `Image exceeds ${MAX_IMAGE_BYTES} byte limit`);
+  }
+  return { data: candidate.data, mimeType: candidate.mimeType };
+}
+
 const handleRegister: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as RegisterRequest;
+  const body = await readJson<RegisterRequest>(req);
   if (!body.name || typeof body.name !== "string") {
     return sendError(res, 400, "Missing or invalid 'name' field");
   }
@@ -132,10 +197,11 @@ const handleRegister: RouteHandler = async (req, res) => {
 };
 
 const handleSend: RouteHandler = async (req, res, userName) => {
-  const body = JSON.parse(await readBody(req)) as SendRequest;
+  const body = await readJson<SendRequest>(req);
   if (!body.to || (!body.content && !body.image)) {
     return sendError(res, 400, "Missing 'to' or 'content' field");
   }
+  const image = validateImagePayload(body.image);
   // Typing indicator: broadcast typing event without routing to chat log
   if (body.content === "TYPING") {
     const channel = body.channel || "#all";
@@ -147,7 +213,7 @@ const handleSend: RouteHandler = async (req, res, userName) => {
   const content = body.content || "";
   const channel = body.channel || "#all";
   try {
-    const message = routeMessage(userName!, body.to, content, channel, body.image);
+    const message = routeMessage(userName!, body.to, content, channel, image);
     broadcast({
       type: "message",
       from: message.from,
@@ -225,7 +291,7 @@ function kickUser(name: string): boolean {
 }
 
 const handleKick: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as { name?: string };
+  const body = await readJson<{ name?: string }>(req);
   if (!body.name) {
     return sendError(res, 400, "Missing 'name' field");
   }
@@ -245,17 +311,18 @@ const handleKickAll: RouteHandler = async (_req, res) => {
 };
 
 const handleAdminSend: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as {
+  const body = await readJson<{
     from?: string;
     to?: string;
     content?: string;
     channel?: string;
     image?: { data: string; mimeType: string };
-  };
+  }>(req);
   const from = body.from || "operator";
   if (!body.to || (!body.content && !body.image)) {
     return sendError(res, 400, "Missing 'to' or 'content' field");
   }
+  const image = validateImagePayload(body.image);
   const content = body.content || "";
   const channel = body.channel || "#all";
   // Auto-register the admin sender so agents can reply
@@ -281,7 +348,7 @@ const handleAdminSend: RouteHandler = async (req, res) => {
     /* already joined or channel issue */
   }
   try {
-    const message = routeMessage(from, body.to, content, channel, body.image);
+    const message = routeMessage(from, body.to, content, channel, image);
     broadcast({
       type: "message",
       from: message.from,
@@ -300,7 +367,7 @@ const handleAdminSend: RouteHandler = async (req, res) => {
 
 // Channel endpoints
 const handleChannelCreate: RouteHandler = async (req, res, userName) => {
-  const body = JSON.parse(await readBody(req)) as { name?: string };
+  const body = await readJson<{ name?: string }>(req);
   if (!body.name || typeof body.name !== "string") {
     return sendError(res, 400, "Missing or invalid 'name' field");
   }
@@ -323,7 +390,7 @@ const handleChannelCreate: RouteHandler = async (req, res, userName) => {
 };
 
 const handleChannelJoin: RouteHandler = async (req, res, userName) => {
-  const body = JSON.parse(await readBody(req)) as { channel?: string };
+  const body = await readJson<{ channel?: string }>(req);
   if (!body.channel || typeof body.channel !== "string") {
     return sendError(res, 400, "Missing or invalid 'channel' field");
   }
@@ -338,7 +405,7 @@ const handleChannelJoin: RouteHandler = async (req, res, userName) => {
 };
 
 const handleChannelLeave: RouteHandler = async (req, res, userName) => {
-  const body = JSON.parse(await readBody(req)) as { channel?: string };
+  const body = await readJson<{ channel?: string }>(req);
   if (!body.channel || typeof body.channel !== "string") {
     return sendError(res, 400, "Missing or invalid 'channel' field");
   }
@@ -352,7 +419,7 @@ const handleChannelLeave: RouteHandler = async (req, res, userName) => {
 };
 
 const handleChannelInvite: RouteHandler = async (req, res, userName) => {
-  const body = JSON.parse(await readBody(req)) as { channel?: string; user?: string };
+  const body = await readJson<{ channel?: string; user?: string }>(req);
   if (!body.channel || typeof body.channel !== "string") {
     return sendError(res, 400, "Missing or invalid 'channel' field");
   }
@@ -403,7 +470,7 @@ const handleChannelHistory: RouteHandler = async (req, res, userName) => {
 };
 
 const handleAdminChannelCreate: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as { name?: string };
+  const body = await readJson<{ name?: string }>(req);
   if (!body.name || typeof body.name !== "string") {
     return sendError(res, 400, "Missing or invalid 'name' field");
   }
@@ -436,7 +503,7 @@ const handleAdminChannelHistory: RouteHandler = async (req, res) => {
 };
 
 const handleAdminChannelDelete: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as { name?: string };
+  const body = await readJson<{ name?: string }>(req);
   if (!body.name || typeof body.name !== "string") {
     return sendError(res, 400, "Missing or invalid 'name' field");
   }
@@ -456,7 +523,7 @@ const handleAdminChannelDelete: RouteHandler = async (req, res) => {
 };
 
 const handleAdminMarkRead: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as { channel?: string; timestamp?: number };
+  const body = await readJson<{ channel?: string; timestamp?: number }>(req);
   if (!body.channel || typeof body.channel !== "string") {
     return sendError(res, 400, "Missing or invalid 'channel' field");
   }
@@ -488,13 +555,13 @@ const handleAdminAgentConfigs: RouteHandler = async (_req, res) => {
 };
 
 const handleAdminAgentConfigCreate: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as {
+  const body = await readJson<{
     name?: string;
     workDir?: string;
     command?: string;
     autoStart?: boolean;
     envVars?: Record<string, string>;
-  };
+  }>(req);
   if (!body.name || typeof body.name !== "string") {
     return sendError(res, 400, "Missing or invalid 'name' field");
   }
@@ -523,13 +590,13 @@ const handleAdminAgentConfigCreate: RouteHandler = async (req, res) => {
 };
 
 const handleAdminAgentConfigUpdate: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as {
+  const body = await readJson<{
     id?: string;
     name?: string;
     workDir?: string;
     autoStart?: boolean;
     envVars?: Record<string, string> | null;
-  };
+  }>(req);
   if (!body.id || typeof body.id !== "string") {
     return sendError(res, 400, "Missing or invalid 'id' field");
   }
@@ -556,7 +623,7 @@ const handleAdminAgentConfigUpdate: RouteHandler = async (req, res) => {
 };
 
 const handleAdminAgentConfigDelete: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as { id?: string };
+  const body = await readJson<{ id?: string }>(req);
   if (!body.id || typeof body.id !== "string") {
     return sendError(res, 400, "Missing or invalid 'id' field");
   }
@@ -576,7 +643,7 @@ const handleAdminAgentConfigDelete: RouteHandler = async (req, res) => {
 };
 
 const handleAdminAgentStart: RouteHandler = async (req, res) => {
-  const body = JSON.parse(await readBody(req)) as { id?: string };
+  const body = await readJson<{ id?: string }>(req);
   if (!body.id || typeof body.id !== "string") {
     return sendError(res, 400, "Missing or invalid 'id' field");
   }
@@ -694,7 +761,7 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
         return;
       }
       publicRoute.handler(req, res).catch((e) => {
-        sendError(res, 500, (e as Error).message);
+        handleRouteError(res, e);
       });
       return;
     }
@@ -711,7 +778,7 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
         return;
       }
       joinRoute.handler(req, res).catch((e) => {
-        sendError(res, 500, (e as Error).message);
+        handleRouteError(res, e);
       });
       return;
     }
@@ -728,7 +795,7 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
         return;
       }
       adminRoute.handler(req, res).catch((e) => {
-        sendError(res, 500, (e as Error).message);
+        handleRouteError(res, e);
       });
       return;
     }
@@ -751,7 +818,7 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
         broadcast({ type: "status", name: userName, online: true, timestamp: Date.now() });
       }
       protectedRoute.handler(req, res, userName).catch((e) => {
-        sendError(res, 500, (e as Error).message);
+        handleRouteError(res, e);
       });
       return;
     }
@@ -760,6 +827,8 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
   }
 
   const server = createServer(handleRequest);
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
       console.error(`Error: Port ${port} is already in use. Is another Hub instance running?`);

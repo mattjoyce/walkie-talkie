@@ -76,3 +76,37 @@ describe("authentication", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("request hardening", () => {
+  it("sets request and header timeouts", () => {
+    expect(ctx.server.requestTimeout).toBe(30_000);
+    expect(ctx.server.headersTimeout).toBe(10_000);
+  });
+
+  it("returns 400 for malformed JSON", async () => {
+    const res = await fetch(`${ctx.baseUrl}/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ctx.joinToken}`,
+      },
+      body: "{",
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: "Invalid JSON" });
+  });
+
+  it("returns 413 for oversized request bodies", async () => {
+    const res = await fetch(`${ctx.baseUrl}/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ctx.joinToken}`,
+      },
+      body: JSON.stringify({ name: "x".repeat(8 * 1024 * 1024) }),
+    });
+
+    expect(res.status).toBe(413);
+  });
+});
