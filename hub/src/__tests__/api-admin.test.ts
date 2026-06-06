@@ -45,7 +45,7 @@ describe("POST /kick", () => {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(inboxRes.status).toBe(401);
-    await expect(inboxRes.json()).resolves.toEqual({ error: "Unauthorized" });
+    await expect(inboxRes.json()).resolves.toMatchObject({ error: "Unauthorized", code: "UNAUTHENTICATED" });
   });
 
   it("should return 404 for non-existent user", async () => {

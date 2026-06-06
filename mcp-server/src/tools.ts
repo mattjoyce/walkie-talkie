@@ -4,7 +4,7 @@ import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { formatControl, isControl, RADIO_KILLED_PREFIX } from "@walkie-talkie/contract";
+import { formatControl, HubError, isControl, RADIO_KILLED_PREFIX } from "@walkie-talkie/contract";
 import { z } from "zod";
 import { HubClient } from "./client.js";
 
@@ -299,7 +299,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
         return { content: contentBlocks };
       } catch (e) {
         const msg = (e as Error).message;
-        if (msg === "Unauthorized") {
+        if (e instanceof HubError && e.code === "UNAUTHENTICATED") {
           currentToken = null;
           currentName = null;
           return {
@@ -385,7 +385,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
         };
       } catch (e) {
         const msg = (e as Error).message;
-        if (msg === "Unauthorized") {
+        if (e instanceof HubError && e.code === "UNAUTHENTICATED") {
           currentToken = null;
           currentName = null;
           return {

@@ -91,6 +91,120 @@ export interface ErrorResponse {
   error: string;
 }
 
+// ---------------------------------------------------------------------------
+// Error taxonomy
+//
+// Every failure that crosses the hub boundary is a `HubError` with a
+// discriminated `code` callers branch on, a human `message`, and a `retryable`
+// flag. The wire body (`HubErrorBody`) additionally carries the legacy `error`
+// field so existing consumers (slack-bot, dashboard) keep working. The hub
+// throws/sends these; the mcp-server client reconstructs them so the tool layer
+// can switch on `code` instead of string-matching message text.
+// ---------------------------------------------------------------------------
+
+export type HubErrorCode =
+  | "UNAUTHENTICATED"
+  | "NOT_REGISTERED"
+  | "FORBIDDEN"
+  | "BAD_REQUEST"
+  | "RECIPIENT_NOT_FOUND"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "PAYLOAD_TOO_LARGE"
+  | "METHOD_NOT_ALLOWED"
+  | "HUB_UNREACHABLE"
+  | "INTERNAL";
+
+/** The typed fields of an error response body. */
+export interface HubErrorBody {
+  code: HubErrorCode;
+  message: string;
+  retryable: boolean;
+}
+
+/** Only these codes represent transient conditions worth retrying. */
+const RETRYABLE_CODES: ReadonlySet<HubErrorCode> = new Set<HubErrorCode>(["HUB_UNREACHABLE", "INTERNAL"]);
+
+/** True when a code represents a transient failure a caller may retry. */
+export function isRetryable(code: HubErrorCode): boolean {
+  return RETRYABLE_CODES.has(code);
+}
+
+const CODE_BY_STATUS: Readonly<Record<number, HubErrorCode>> = {
+  400: "BAD_REQUEST",
+  401: "UNAUTHENTICATED",
+  403: "FORBIDDEN",
+  404: "NOT_FOUND",
+  405: "METHOD_NOT_ALLOWED",
+  409: "CONFLICT",
+  413: "PAYLOAD_TOO_LARGE",
+  500: "INTERNAL",
+  503: "HUB_UNREACHABLE",
+};
+
+/** Map an HTTP status to its default error code (INTERNAL if unknown). */
+export function codeForStatus(status: number): HubErrorCode {
+  return CODE_BY_STATUS[status] ?? "INTERNAL";
+}
+
+const STATUS_BY_CODE: Readonly<Record<HubErrorCode, number>> = {
+  BAD_REQUEST: 400,
+  UNAUTHENTICATED: 401,
+  NOT_REGISTERED: 401,
+  FORBIDDEN: 403,
+  RECIPIENT_NOT_FOUND: 404,
+  NOT_FOUND: 404,
+  METHOD_NOT_ALLOWED: 405,
+  CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
+  INTERNAL: 500,
+  HUB_UNREACHABLE: 503,
+};
+
+/** Map an error code to the HTTP status the hub uses for it. */
+export function statusForCode(code: HubErrorCode): number {
+  return STATUS_BY_CODE[code];
+}
+
+/** A typed error crossing the hub boundary. */
+export class HubError extends Error {
+  readonly code: HubErrorCode;
+  readonly status: number;
+  readonly retryable: boolean;
+
+  constructor(code: HubErrorCode, message: string, status?: number) {
+    super(message);
+    this.name = "HubError";
+    this.code = code;
+    this.status = status ?? statusForCode(code);
+    this.retryable = isRetryable(code);
+  }
+
+  /** The typed wire fields for this error. */
+  toBody(): HubErrorBody {
+    return { code: this.code, message: this.message, retryable: this.retryable };
+  }
+
+  /** Reconstruct a HubError from a wire body and the response status. */
+  static fromBody(body: HubErrorBody, status: number): HubError {
+    return new HubError(body.code, body.message, status);
+  }
+}
+
+/** True when `value` is one of the known `HubErrorCode`s. */
+export function isHubErrorCode(value: unknown): value is HubErrorCode {
+  return typeof value === "string" && value in STATUS_BY_CODE;
+}
+
+/** True when `data` carries the typed error fields `{code, message, retryable}`. */
+export function isHubErrorBody(data: unknown): data is HubErrorBody {
+  if (!data || typeof data !== "object") return false;
+  const candidate = data as Partial<HubErrorBody>;
+  return (
+    isHubErrorCode(candidate.code) && typeof candidate.message === "string" && typeof candidate.retryable === "boolean"
+  );
+}
+
 export type HubEvent =
   | {
       type: "message";

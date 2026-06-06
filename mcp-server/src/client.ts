@@ -2,7 +2,10 @@ import http from "node:http";
 import https from "node:https";
 import {
   type ChannelSummary,
+  codeForStatus,
+  HubError,
   type HubUser,
+  isHubErrorBody,
   type Message,
   POLL_CLIENT_TIMEOUT_MS,
   type PollResponse,
@@ -76,21 +79,37 @@ export class HubClient {
             try {
               resolve({ status, data: JSON.parse(raw) as T });
             } catch {
-              reject(new Error(`Invalid JSON response: ${raw}`));
+              // Don't echo the raw (possibly huge / sensitive) body back out.
+              reject(new HubError("INTERNAL", "Invalid response from hub"));
             }
           });
         },
       );
 
-      req.on("error", reject);
+      // Connection refused / DNS / reset etc. — the hub is unreachable, not a
+      // protocol error. Surface a typed, retryable error, never raw ECONNREFUSED.
+      req.on("error", () => reject(new HubError("HUB_UNREACHABLE", "Hub is unreachable")));
       req.on("timeout", () => {
         req.destroy();
-        reject(new Error("Request timed out"));
+        reject(new HubError("HUB_UNREACHABLE", "Hub request timed out"));
       });
 
       if (bodyStr) req.write(bodyStr);
       req.end();
     });
+  }
+
+  /**
+   * Turn a non-200 response into a typed HubError. Uses the typed wire fields
+   * when present, otherwise derives a code from the HTTP status.
+   */
+  private toHubError(res: HubResponse, fallbackMessage: string): HubError {
+    if (isHubErrorBody(res.data)) {
+      return HubError.fromBody(res.data, res.status);
+    }
+    // res.data may be null / a primitive (odd non-200 body) — read `error` defensively.
+    const message = (res.data as { error?: string } | null)?.error ?? fallbackMessage;
+    return new HubError(codeForStatus(res.status), message, res.status);
   }
 
   async register(name: string, joinToken: string, oldToken?: string): Promise<RegisterResponse> {
@@ -103,7 +122,7 @@ export class HubClient {
       body,
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Registration failed");
+      throw this.toHubError(res, "Registration failed");
     }
     return res.data;
   }
@@ -136,7 +155,7 @@ export class HubClient {
       body,
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Send failed");
+      throw this.toHubError(res, "Send failed");
     }
     return res.data;
   }
@@ -150,7 +169,7 @@ export class HubClient {
     });
     if (res.status === 204) return null;
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Poll failed");
+      throw this.toHubError(res, "Poll failed");
     }
     await this.ackDeliveredMessages(token, res.data.messages);
     return res.data;
@@ -163,7 +182,7 @@ export class HubClient {
       token,
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Inbox fetch failed");
+      throw this.toHubError(res, "Inbox fetch failed");
     }
     await this.ackDeliveredMessages(token, res.data.messages);
     return res.data;
@@ -179,7 +198,7 @@ export class HubClient {
       body: { deliveryIds },
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Ack failed");
+      throw this.toHubError(res, "Ack failed");
     }
   }
 
@@ -190,7 +209,7 @@ export class HubClient {
       token,
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Failed to get users");
+      throw this.toHubError(res, "Failed to get users");
     }
     return res.data.users;
   }
@@ -202,7 +221,7 @@ export class HubClient {
       token,
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Failed to list channels");
+      throw this.toHubError(res, "Failed to list channels");
     }
     return res.data.channels;
   }
@@ -215,7 +234,7 @@ export class HubClient {
       body: { name },
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Failed to create channel");
+      throw this.toHubError(res, "Failed to create channel");
     }
     return { channel: res.data.channel };
   }
@@ -228,7 +247,7 @@ export class HubClient {
       body: { channel },
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Failed to join channel");
+      throw this.toHubError(res, "Failed to join channel");
     }
   }
 
@@ -240,7 +259,7 @@ export class HubClient {
       body: { channel },
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Failed to leave channel");
+      throw this.toHubError(res, "Failed to leave channel");
     }
   }
 
@@ -252,7 +271,7 @@ export class HubClient {
       body: { channel, user },
     });
     if (res.status !== 200) {
-      throw new Error((res.data as { error?: string }).error ?? "Failed to invite user to channel");
+      throw this.toHubError(res, "Failed to invite user to channel");
     }
   }
 }

@@ -3,7 +3,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import {
   type AgentConfigDTO,
   CONNECTED_USERS_PREFIX,
+  codeForStatus,
   formatControl,
+  type HubErrorCode,
+  isRetryable,
   RADIO_KILLED_PREFIX,
   STALE_GRACE_MS,
   TYPING_SIGNAL,
@@ -138,8 +141,28 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.end(JSON.stringify(data));
 }
 
-function sendError(res: ServerResponse, status: number, message: string): void {
-  sendJson(res, status, { error: message });
+/** Generic text for any 500 — never echo raw internals to a caller. */
+const INTERNAL_ERROR_MESSAGE = "Internal server error";
+
+function sendError(res: ServerResponse, status: number, message: string, code?: HubErrorCode): void {
+  const resolvedCode = code ?? codeForStatus(status);
+  // `error` is kept for backward compatibility (slack-bot, dashboard read it);
+  // `code`/`retryable` are the typed fields callers should branch on.
+  sendJson(res, status, {
+    error: message,
+    code: resolvedCode,
+    message,
+    retryable: isRetryable(resolvedCode),
+  });
+}
+
+/**
+ * Send a 500 without leaking internals: the real error is logged server-side,
+ * the caller receives only a generic message.
+ */
+function sendInternalError(res: ServerResponse, context: string, err: unknown): void {
+  console.error(`[error] ${context}:`, err);
+  sendError(res, 500, INTERNAL_ERROR_MESSAGE, "INTERNAL");
 }
 
 function rejectStaleSession(
@@ -159,7 +182,7 @@ function handleRouteError(res: ServerResponse, err: unknown): void {
     sendError(res, err.status, err.message);
     return;
   }
-  sendError(res, 500, (err as Error).message);
+  sendInternalError(res, "unhandled route error", err);
 }
 
 function validateImagePayload(image: unknown): MessageImage | undefined {
@@ -276,7 +299,7 @@ const handleSend: RouteHandler = async (req, res, userName, sessionEpoch) => {
     console.log(`[send] ${userName} -> ${body.to} (${channel}): ${content}${body.image ? " [+image]" : ""}`);
     sendJson(res, 200, { id: message.id, to: message.to });
   } catch (e) {
-    sendError(res, 404, (e as Error).message);
+    sendError(res, 404, (e as Error).message, "RECIPIENT_NOT_FOUND");
   }
 };
 
@@ -455,7 +478,7 @@ const handleAdminSend: RouteHandler = async (req, res) => {
     console.log(`[admin-send] ${from} -> ${body.to} (${channel}): ${content}${body.image ? " [+image]" : ""}`);
     sendJson(res, 200, { id: message.id, to: message.to });
   } catch (e) {
-    sendError(res, 404, (e as Error).message);
+    sendError(res, 404, (e as Error).message, "RECIPIENT_NOT_FOUND");
   }
 };
 
@@ -480,7 +503,7 @@ const handleChannelCreate: RouteHandler = async (req, res, userName, sessionEpoc
     console.log(`[channel-create] ${channelName} by ${userName}`);
     sendJson(res, 200, { ok: true, channel: channelName });
   } catch (e) {
-    sendError(res, 500, (e as Error).message);
+    sendInternalError(res, `channel-create ${channelName}`, e);
   }
 };
 
@@ -583,7 +606,7 @@ const handleAdminChannelCreate: RouteHandler = async (req, res) => {
     console.log(`[admin-channel-create] ${channelName}`);
     sendJson(res, 200, { ok: true, channel: channelName });
   } catch (e) {
-    sendError(res, 500, (e as Error).message);
+    sendInternalError(res, `admin-channel-create ${channelName}`, e);
   }
 };
 
@@ -753,7 +776,7 @@ const handleAdminAgentStart: RouteHandler = async (req, res) => {
     await launchAgent(config);
     sendJson(res, 200, { ok: true });
   } catch (e) {
-    sendError(res, 500, (e as Error).message);
+    sendInternalError(res, `agent-start ${config.name}`, e);
   }
 };
 

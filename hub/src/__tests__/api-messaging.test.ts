@@ -171,7 +171,10 @@ describe("POST /send", () => {
     });
 
     expect(res.status).toBe(400);
-    await expect(res.json()).resolves.toEqual({ error: "Image mimeType must start with image/" });
+    await expect(res.json()).resolves.toMatchObject({
+      error: "Image mimeType must start with image/",
+      code: "BAD_REQUEST",
+    });
   });
 
   it("should reject oversized images before routing", async () => {

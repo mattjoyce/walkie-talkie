@@ -104,7 +104,7 @@ describe("request hardening", () => {
     });
 
     expect(res.status).toBe(400);
-    await expect(res.json()).resolves.toEqual({ error: "Invalid JSON" });
+    await expect(res.json()).resolves.toMatchObject({ error: "Invalid JSON", code: "BAD_REQUEST" });
   });
 
   it("returns 413 for oversized request bodies", async () => {
