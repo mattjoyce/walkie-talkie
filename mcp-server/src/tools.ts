@@ -14,32 +14,94 @@ const MIME_TYPES: Record<string, string> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
 };
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const IMAGE_FETCH_TIMEOUT_MS = 15_000;
+const MAX_IMAGE_REDIRECTS = 5;
 
 function getMimeType(source: string): string {
   const ext = path.extname(source).toLowerCase();
   return MIME_TYPES[ext] ?? "image/png";
 }
 
-function fetchUrl(url: string): Promise<Buffer> {
+function fetchUrl(url: string, redirectsRemaining = MAX_IMAGE_REDIRECTS): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const transport = url.startsWith("https") ? https : http;
-    transport
-      .get(url, (res) => {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      reject(new Error(`Invalid URL: ${url}`));
+      return;
+    }
+    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+      reject(new Error(`Unsupported URL protocol: ${parsedUrl.protocol}`));
+      return;
+    }
+
+    const transport = parsedUrl.protocol === "https:" ? https : http;
+    let settled = false;
+    const fail = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      req.destroy();
+      reject(err);
+    };
+
+    const req = transport
+      .get(parsedUrl, (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          fetchUrl(res.headers.location).then(resolve, reject);
+          if (redirectsRemaining <= 0) {
+            fail(new Error(`Too many redirects while fetching image: ${url}`));
+            return;
+          }
+          const nextUrl = new URL(res.headers.location, parsedUrl).toString();
+          res.resume();
+          fetchUrl(nextUrl, redirectsRemaining - 1).then(resolve, reject);
           return;
         }
         if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode}`));
+          fail(new Error(`HTTP ${res.statusCode}`));
+          res.resume();
+          return;
+        }
+        const contentLength = Number(res.headers["content-length"]);
+        if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+          fail(new Error(`Image exceeds ${MAX_IMAGE_BYTES} byte limit`));
+          res.resume();
           return;
         }
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => resolve(Buffer.concat(chunks)));
-        res.on("error", reject);
+        let totalBytes = 0;
+        res.on("data", (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes > MAX_IMAGE_BYTES) {
+            fail(new Error(`Image exceeds ${MAX_IMAGE_BYTES} byte limit`));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("end", () => {
+          if (settled) return;
+          settled = true;
+          resolve(Buffer.concat(chunks));
+        });
+        res.on("error", fail);
       })
-      .on("error", reject);
+      .on("error", fail)
+      .setTimeout(IMAGE_FETCH_TIMEOUT_MS, () => {
+        fail(new Error(`Image fetch timed out after ${IMAGE_FETCH_TIMEOUT_MS}ms`));
+      });
   });
+}
+
+function readImageFile(source: string): Buffer {
+  const stat = fs.statSync(source);
+  if (!stat.isFile()) {
+    throw new Error("Image source must be a regular file");
+  }
+  if (stat.size > MAX_IMAGE_BYTES) {
+    throw new Error(`Image exceeds ${MAX_IMAGE_BYTES} byte limit`);
+  }
+  return fs.readFileSync(source);
 }
 
 let client: HubClient;
@@ -151,7 +213,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
         if (source.startsWith("http://") || source.startsWith("https://")) {
           buf = await fetchUrl(source);
         } else {
-          buf = fs.readFileSync(source);
+          buf = readImageFile(source);
         }
         const data = buf.toString("base64");
         const mimeType = getMimeType(source);

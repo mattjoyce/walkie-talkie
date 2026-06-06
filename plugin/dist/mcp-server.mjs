@@ -30298,28 +30298,86 @@ var MIME_TYPES = {
   ".gif": "image/gif",
   ".webp": "image/webp"
 };
+var MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+var IMAGE_FETCH_TIMEOUT_MS = 15e3;
+var MAX_IMAGE_REDIRECTS = 5;
 function getMimeType(source) {
   const ext = path.extname(source).toLowerCase();
   return MIME_TYPES[ext] ?? "image/png";
 }
-function fetchUrl(url2) {
+function fetchUrl(url2, redirectsRemaining = MAX_IMAGE_REDIRECTS) {
   return new Promise((resolve, reject) => {
-    const transport2 = url2.startsWith("https") ? https2 : http2;
-    transport2.get(url2, (res) => {
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url2);
+    } catch {
+      reject(new Error(`Invalid URL: ${url2}`));
+      return;
+    }
+    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+      reject(new Error(`Unsupported URL protocol: ${parsedUrl.protocol}`));
+      return;
+    }
+    const transport2 = parsedUrl.protocol === "https:" ? https2 : http2;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      req.destroy();
+      reject(err);
+    };
+    const req = transport2.get(parsedUrl, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        fetchUrl(res.headers.location).then(resolve, reject);
+        if (redirectsRemaining <= 0) {
+          fail(new Error(`Too many redirects while fetching image: ${url2}`));
+          return;
+        }
+        const nextUrl = new URL(res.headers.location, parsedUrl).toString();
+        res.resume();
+        fetchUrl(nextUrl, redirectsRemaining - 1).then(resolve, reject);
         return;
       }
       if (res.statusCode && res.statusCode >= 400) {
-        reject(new Error(`HTTP ${res.statusCode}`));
+        fail(new Error(`HTTP ${res.statusCode}`));
+        res.resume();
+        return;
+      }
+      const contentLength = Number(res.headers["content-length"]);
+      if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+        fail(new Error(`Image exceeds ${MAX_IMAGE_BYTES} byte limit`));
+        res.resume();
         return;
       }
       const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
-      res.on("error", reject);
-    }).on("error", reject);
+      let totalBytes = 0;
+      res.on("data", (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_IMAGE_BYTES) {
+          fail(new Error(`Image exceeds ${MAX_IMAGE_BYTES} byte limit`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("end", () => {
+        if (settled) return;
+        settled = true;
+        resolve(Buffer.concat(chunks));
+      });
+      res.on("error", fail);
+    }).on("error", fail).setTimeout(IMAGE_FETCH_TIMEOUT_MS, () => {
+      fail(new Error(`Image fetch timed out after ${IMAGE_FETCH_TIMEOUT_MS}ms`));
+    });
   });
+}
+function readImageFile(source) {
+  const stat = fs.statSync(source);
+  if (!stat.isFile()) {
+    throw new Error("Image source must be a regular file");
+  }
+  if (stat.size > MAX_IMAGE_BYTES) {
+    throw new Error(`Image exceeds ${MAX_IMAGE_BYTES} byte limit`);
+  }
+  return fs.readFileSync(source);
 }
 var client;
 var joinToken;
@@ -30416,7 +30474,7 @@ function createMcpServer(hubUrl2, joinTok) {
         if (source.startsWith("http://") || source.startsWith("https://")) {
           buf = await fetchUrl(source);
         } else {
-          buf = fs.readFileSync(source);
+          buf = readImageFile(source);
         }
         const data = buf.toString("base64");
         const mimeType = getMimeType(source);
