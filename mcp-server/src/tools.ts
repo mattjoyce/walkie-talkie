@@ -230,8 +230,22 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
         }
         return { content: contentBlocks };
       } catch (e) {
+        const msg = (e as Error).message;
+        if (msg === "Unauthorized") {
+          currentToken = null;
+          currentName = null;
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately.",
+              },
+            ],
+            isError: true,
+          };
+        }
         return {
-          content: [{ type: "text" as const, text: `Check failed: ${(e as Error).message}` }],
+          content: [{ type: "text" as const, text: `Check failed: ${msg}` }],
           isError: true,
         };
       }

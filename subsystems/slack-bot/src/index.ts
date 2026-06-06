@@ -33,6 +33,13 @@ if (!JOIN_TOKEN) {
 let hubToken: string | null = null;
 let botUserId: string | null = null;
 
+class HubUnauthorizedError extends Error {
+  constructor(message = "Unauthorized") {
+    super(message);
+    this.name = "HubUnauthorizedError";
+  }
+}
+
 async function hubRegister(): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch(`${HUB_URL}/register`, {
@@ -103,6 +110,9 @@ async function hubPoll(): Promise<HubMessage[]> {
       Authorization: `Bearer ${hubToken}`,
     },
   });
+  if (res.status === 401) {
+    throw new HubUnauthorizedError();
+  }
   if (!res.ok) {
     throw new Error(`Poll failed: ${res.status}`);
   }
@@ -203,6 +213,11 @@ async function pollLoop(): Promise<void> {
         }
       }
     } catch (e) {
+      if (e instanceof HubUnauthorizedError) {
+        hubToken = null;
+        console.log("[slack-bot] Hub rejected poll token, stopping poll loop.");
+        return;
+      }
       console.error("[poll] Error:", (e as Error).message);
       // Re-register and retry
       try {

@@ -31,6 +31,23 @@ describe("POST /kick", () => {
     expect(body.kicked).toBe("kick-target");
   });
 
+  it("should reject a kicked user's next inbox check even when no poll was parked", async () => {
+    const token = await registerUser(ctx, "kick-no-poll");
+
+    const kickRes = await fetch(`${ctx.baseUrl}/kick`, {
+      method: "POST",
+      headers: adminHeaders(),
+      body: JSON.stringify({ name: "kick-no-poll" }),
+    });
+    expect(kickRes.status).toBe(200);
+
+    const inboxRes = await fetch(`${ctx.baseUrl}/inbox`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(inboxRes.status).toBe(401);
+    await expect(inboxRes.json()).resolves.toEqual({ error: "Unauthorized" });
+  });
+
   it("should return 404 for non-existent user", async () => {
     const res = await fetch(`${ctx.baseUrl}/kick`, {
       method: "POST",

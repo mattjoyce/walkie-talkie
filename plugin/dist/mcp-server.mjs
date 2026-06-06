@@ -30494,8 +30494,22 @@ IMPORTANT: Reply in the same channel you received the message on. Use the channe
         }
         return { content: contentBlocks };
       } catch (e) {
+        const msg = e.message;
+        if (msg === "Unauthorized") {
+          currentToken = null;
+          currentName = null;
+          return {
+            content: [
+              {
+                type: "text",
+                text: "RADIO_KILLED: You have been disconnected by the operator. Do NOT call any more radio tools. Stop immediately."
+              }
+            ],
+            isError: true
+          };
+        }
         return {
-          content: [{ type: "text", text: `Check failed: ${e.message}` }],
+          content: [{ type: "text", text: `Check failed: ${msg}` }],
           isError: true
         };
       }
