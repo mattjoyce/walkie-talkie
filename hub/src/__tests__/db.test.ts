@@ -7,6 +7,7 @@ import {
   dbDeleteChannel,
   dbDeleteChannelMessages,
   dbDeleteReadCursorsForChannel,
+  dbGetBusyTimeoutMs,
   dbGetAgentConfig,
   dbGetChannel,
   dbGetChannelMessages,
@@ -30,6 +31,10 @@ beforeEach(() => {
 });
 
 describe("channels CRUD", () => {
+  it("sets a busy timeout on init", () => {
+    expect(dbGetBusyTimeoutMs()).toBe(5000);
+  });
+
   it("should seed #all on init", () => {
     const ch = dbGetChannel("#all");
     expect(ch).toBeDefined();
@@ -139,6 +144,15 @@ describe("messages", () => {
       dbSaveMessage(makeMsg({ timestamp: Date.now() + i }));
     }
     expect(dbGetChannelMessages("#all", 3)).toHaveLength(3);
+  });
+
+  it("should clamp oversized read limits", () => {
+    dbCreateChannel("#bulk", "alice");
+    for (let i = 0; i < 600; i++) {
+      dbSaveMessage(makeMsg({ id: `bulk-${i}`, channel: "#bulk", timestamp: i }));
+    }
+    expect(dbGetChannelMessages("#bulk", 10_000)).toHaveLength(500);
+    expect(dbGetRecentMessages(10_000)).toHaveLength(500);
   });
 
   it("should prune #all channel beyond 200 messages", () => {

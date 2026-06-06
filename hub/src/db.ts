@@ -20,11 +20,30 @@ export interface ChannelRow {
 }
 
 let db: Database.Database;
+const DB_BUSY_TIMEOUT_MS = 5_000;
+const DB_SLOW_QUERY_MS = 50;
+const MAX_READ_LIMIT = 500;
+const MAX_CHANNEL_ROWS = 500;
+const MAX_AGENT_CONFIG_ROWS = 500;
+const MAX_USER_CHANNEL_ROWS = 500;
+
+function clampLimit(limit: number, fallback: number): number {
+  if (!Number.isFinite(limit)) return fallback;
+  return Math.min(Math.max(Math.floor(limit), 1), MAX_READ_LIMIT);
+}
+
+function logSlowQuery(name: string, startedAt: number): void {
+  const elapsed = Date.now() - startedAt;
+  if (elapsed > DB_SLOW_QUERY_MS) {
+    console.warn(`[db] ${name} took ${elapsed}ms`);
+  }
+}
 
 export function initDB(): void {
   const dbPath = process.env.WALKIE_TALKIE_DB_PATH ?? path.join(process.cwd(), "walkie-talkie.db");
   db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
+  db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS channels (
@@ -114,7 +133,9 @@ export function dbDeleteChannel(name: string): boolean {
 }
 
 export function dbListChannels(): ChannelRow[] {
-  return db.prepare("SELECT name, created_by, created_at FROM channels ORDER BY created_at").all() as ChannelRow[];
+  return db
+    .prepare("SELECT name, created_by, created_at FROM channels ORDER BY created_at LIMIT ?")
+    .all(MAX_CHANNEL_ROWS) as ChannelRow[];
 }
 
 export function dbGetChannel(name: string): ChannelRow | undefined {
@@ -136,7 +157,9 @@ export function dbRemoveAllMembersOfChannel(channel: string): void {
 }
 
 export function dbGetUserChannels(userName: string): string[] {
-  const rows = db.prepare("SELECT channel FROM channel_members WHERE user_name = ?").all(userName) as {
+  const rows = db
+    .prepare("SELECT channel FROM channel_members WHERE user_name = ? LIMIT ?")
+    .all(userName, MAX_USER_CHANNEL_ROWS) as {
     channel: string;
   }[];
   return rows.map((r) => r.channel);
@@ -176,18 +199,22 @@ function parseMessageRow(row: Record<string, unknown>): Message {
 }
 
 export function dbGetChannelMessages(channel: string, limit = 50): Message[] {
+  const startedAt = Date.now();
   const rows = db
     .prepare(
       `SELECT id, "from", "to", content, channel, timestamp, image FROM messages WHERE channel = ? ORDER BY timestamp ASC LIMIT ?`,
     )
-    .all(channel, limit) as Record<string, unknown>[];
+    .all(channel, clampLimit(limit, 50)) as Record<string, unknown>[];
+  logSlowQuery("dbGetChannelMessages", startedAt);
   return rows.map(parseMessageRow);
 }
 
 export function dbGetRecentMessages(limit = 200): Message[] {
+  const startedAt = Date.now();
   const rows = db
     .prepare(`SELECT id, "from", "to", content, channel, timestamp, image FROM messages ORDER BY timestamp ASC LIMIT ?`)
-    .all(limit) as Record<string, unknown>[];
+    .all(clampLimit(limit, 200)) as Record<string, unknown>[];
+  logSlowQuery("dbGetRecentMessages", startedAt);
   return rows.map(parseMessageRow);
 }
 
@@ -204,15 +231,19 @@ export function dbUpdateReadCursor(userName: string, channel: string, timestamp?
 }
 
 export function dbGetUnreadCounts(userName: string): Record<string, number> {
+  const startedAt = Date.now();
   const rows = db
     .prepare(
       `SELECT m.channel, COUNT(*) as cnt
      FROM messages m
      LEFT JOIN read_cursors rc ON rc.user_name = ? AND rc.channel = m.channel
      WHERE m.timestamp > COALESCE(rc.last_read_at, 0)
-     GROUP BY m.channel`,
+     GROUP BY m.channel
+     ORDER BY m.channel
+     LIMIT ?`,
     )
-    .all(userName) as { channel: string; cnt: number }[];
+    .all(userName, MAX_CHANNEL_ROWS) as { channel: string; cnt: number }[];
+  logSlowQuery("dbGetUnreadCounts", startedAt);
   const result: Record<string, number> = {};
   for (const row of rows) {
     result[row.channel] = row.cnt;
@@ -242,7 +273,13 @@ export function dbCreateAgentConfig(
 }
 
 export function dbListAgentConfigs(): AgentConfigRow[] {
-  return db.prepare("SELECT * FROM agent_configs ORDER BY created_at").all() as AgentConfigRow[];
+  return db
+    .prepare("SELECT * FROM agent_configs ORDER BY created_at LIMIT ?")
+    .all(MAX_AGENT_CONFIG_ROWS) as AgentConfigRow[];
+}
+
+export function dbGetBusyTimeoutMs(): number {
+  return (db.pragma("busy_timeout", { simple: true }) as number) ?? 0;
 }
 
 export function dbGetAgentConfig(id: string): AgentConfigRow | undefined {
