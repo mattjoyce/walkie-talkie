@@ -1,4 +1,4 @@
-export function getDashboardHTML(adminToken: string): string {
+export function getDashboardHTML(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -939,8 +939,31 @@ export function getDashboardHTML(adminToken: string): string {
     </div>
   </div>
   <script>
-    const ADMIN_TOKEN = "${adminToken}";
+    const DASHBOARD_SESSION_KEY = "walkie-talkie-dashboard-session";
+    let ADMIN_TOKEN = sessionStorage.getItem(DASHBOARD_SESSION_KEY) || "";
     const adminHeaders = { "Content-Type": "application/json", "Authorization": "Bearer " + ADMIN_TOKEN };
+    function setDashboardToken(token) {
+      ADMIN_TOKEN = token;
+      adminHeaders.Authorization = "Bearer " + ADMIN_TOKEN;
+      sessionStorage.setItem(DASHBOARD_SESSION_KEY, ADMIN_TOKEN);
+    }
+    async function ensureDashboardSession() {
+      while (!ADMIN_TOKEN) {
+        const token = prompt("Admin token");
+        if (!token) throw new Error("Dashboard login cancelled");
+        const res = await fetch("/dashboard-login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.token) {
+          alert(data.error || "Login failed");
+          continue;
+        }
+        setDashboardToken(data.token);
+      }
+    }
     const messagesEl = document.getElementById("messages");
     const userListEl = document.getElementById("user-list");
     const channelListEl = document.getElementById("channel-list");
@@ -1549,6 +1572,9 @@ export function getDashboardHTML(adminToken: string): string {
       }).catch(() => {});
     }
 
+    async function initDashboard() {
+    await ensureDashboardSession();
+
     // Fetch initial data
     fetch("/users").then(r => r.json()).then(data => {
       for (const u of data.users) users.set(u.name, u.online);
@@ -1726,6 +1752,14 @@ export function getDashboardHTML(adminToken: string): string {
       statusEl.textContent = "disconnected";
       statusEl.className = "disconnected";
     };
+
+    }
+
+    initDashboard().catch((e) => {
+      statusEl.textContent = "login required";
+      statusEl.className = "disconnected";
+      console.error(e);
+    });
   </script>
 </body>
 </html>`;

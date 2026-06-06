@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   authenticateRequest,
@@ -48,6 +48,8 @@ const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const HEADERS_TIMEOUT_MS = 10_000;
+const DASHBOARD_SESSION_TTL_MS = 60 * 60 * 1000;
+const dashboardSessions = new Map<string, number>();
 
 class RequestError extends Error {
   constructor(
@@ -703,6 +705,26 @@ function authenticateBearer(req: IncomingMessage, expected: string): boolean {
   return scheme === "Bearer" && token === expected;
 }
 
+function createDashboardSession(): { token: string; expiresAt: number } {
+  const token = randomBytes(32).toString("hex");
+  const expiresAt = Date.now() + DASHBOARD_SESSION_TTL_MS;
+  dashboardSessions.set(token, expiresAt);
+  return { token, expiresAt };
+}
+
+function authenticateDashboardSession(req: IncomingMessage): boolean {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) return false;
+  const token = auth.slice(7);
+  const expiresAt = dashboardSessions.get(token);
+  if (!expiresAt) return false;
+  if (expiresAt <= Date.now()) {
+    dashboardSessions.delete(token);
+    return false;
+  }
+  return true;
+}
+
 const STALE_GRACE_MS = 30_000; // 30 seconds before auto-unregister
 const staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -745,11 +767,30 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
     // Dashboard & SSE
     if (path === "/" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(getDashboardHTML(adminToken));
+      res.end(getDashboardHTML());
       return;
     }
     if (path === "/events" && req.method === "GET") {
       addSSEClient(res);
+      return;
+    }
+
+    if (path === "/dashboard-login") {
+      if (req.method !== "POST") {
+        sendError(res, 405, "Method not allowed");
+        return;
+      }
+      readJson<{ token?: string }>(req)
+        .then((body) => {
+          if (body.token !== adminToken) {
+            sendError(res, 401, "Admin token required");
+            return;
+          }
+          sendJson(res, 200, createDashboardSession());
+        })
+        .catch((e) => {
+          handleRouteError(res, e);
+        });
       return;
     }
 
@@ -790,7 +831,7 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
         sendError(res, 405, "Method not allowed");
         return;
       }
-      if (!authenticateBearer(req, adminToken)) {
+      if (!authenticateBearer(req, adminToken) && !authenticateDashboardSession(req)) {
         sendError(res, 401, "Admin token required");
         return;
       }

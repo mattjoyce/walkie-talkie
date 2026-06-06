@@ -110,3 +110,42 @@ describe("request hardening", () => {
     expect(res.status).toBe(413);
   });
 });
+
+describe("dashboard session authentication", () => {
+  it("does not embed the master admin token in dashboard HTML", async () => {
+    const res = await fetch(`${ctx.baseUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain(ctx.adminToken);
+    expect(html).toContain("/dashboard-login");
+  });
+
+  it("issues a dashboard session token for the correct admin token", async () => {
+    const res = await fetch(`${ctx.baseUrl}/dashboard-login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: ctx.adminToken }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { token: string; expiresAt: number };
+    expect(body.token).toBeTruthy();
+    expect(body.token).not.toBe(ctx.adminToken);
+    expect(body.expiresAt).toBeGreaterThan(Date.now());
+
+    const adminRes = await fetch(`${ctx.baseUrl}/admin-unread-counts`, {
+      headers: { Authorization: `Bearer ${body.token}` },
+    });
+    expect(adminRes.status).toBe(200);
+  });
+
+  it("rejects dashboard login with the wrong token", async () => {
+    const res = await fetch(`${ctx.baseUrl}/dashboard-login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "wrong" }),
+    });
+
+    expect(res.status).toBe(401);
+  });
+});
