@@ -30503,7 +30503,7 @@ IMPORTANT: Reply in the same channel you received the message on. Use the channe
   );
   server2.tool(
     "radio_standby",
-    "Stand by for incoming messages using long polling. Blocks up to 30 seconds. Returns received messages or empty if timeout.",
+    "Stand by for incoming messages using long polling. Blocks up to 1 hour. Returns received messages or empty if timeout.",
     {},
     async () => {
       if (!currentToken) {

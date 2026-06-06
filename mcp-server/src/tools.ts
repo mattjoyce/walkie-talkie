@@ -240,7 +240,7 @@ export function createMcpServer(hubUrl: string, joinTok: string): McpServer {
 
   server.tool(
     "radio_standby",
-    "Stand by for incoming messages using long polling. Blocks up to 30 seconds. Returns received messages or empty if timeout.",
+    "Stand by for incoming messages using long polling. Blocks up to 1 hour. Returns received messages or empty if timeout.",
     {},
     async () => {
       if (!currentToken) {
