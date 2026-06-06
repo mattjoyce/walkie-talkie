@@ -1,8 +1,8 @@
 import {
   dbAddChannelMember,
   dbGetChannel,
-  dbListChannels,
   dbListChannelMembers,
+  dbListChannels,
   dbRemoveAllMembersOfChannel,
   dbRemoveChannelMember,
   dbRemoveUserFromAllChannels,
@@ -100,4 +100,12 @@ export function removeChannel(channel: string): void {
 
 export function resetChannelState(): void {
   channelMembers.clear();
+}
+
+/**
+ * Read-only view of the in-memory membership projection, for invariant checks.
+ * The returned map and its sets must not be mutated by callers.
+ */
+export function getMembershipView(): ReadonlyMap<string, ReadonlySet<string>> {
+  return channelMembers;
 }

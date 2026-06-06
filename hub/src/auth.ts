@@ -69,6 +69,16 @@ export function isUserRegistered(name: string): boolean {
   return users.has(name);
 }
 
+// Read-only views over the auth maps, used by the invariant checker to verify
+// the user↔token bijection without exposing mutation of the underlying maps.
+export function getUsersForInvariant(): ReadonlyMap<string, User> {
+  return users;
+}
+
+export function getTokenIndexForInvariant(): ReadonlyMap<string, string> {
+  return tokenToName;
+}
+
 export function resetAuthState(): void {
   users.clear();
   tokenToName.clear();

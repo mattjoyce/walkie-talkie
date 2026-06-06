@@ -39,6 +39,11 @@ export function setOffline(userName: string): void {
   offlineUsers.add(userName);
 }
 
+/** Snapshot of users explicitly marked offline — read-only, for invariant checks. */
+export function getOfflineUsers(): string[] {
+  return Array.from(offlineUsers);
+}
+
 export function addPoll(userName: string, req: IncomingMessage, res: ServerResponse): void {
   removePoll(userName);
 

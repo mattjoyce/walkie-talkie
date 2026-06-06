@@ -54,6 +54,7 @@ import {
   dbUpdateReadCursor,
 } from "./db.js";
 import { addSSEClient, broadcast } from "./events.js";
+import { assertInvariants } from "./invariants.js";
 import { launchAgent } from "./launcher.js";
 import { addPoll, isOnline, onPollDisconnect, removePoll, setOffline, setOnline } from "./polling.js";
 import {
@@ -73,6 +74,7 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const HEADERS_TIMEOUT_MS = 10_000;
 const DASHBOARD_SESSION_TTL_MS = 60 * 60 * 1000;
+const INVARIANT_CHECK_INTERVAL_MS = 10_000;
 const LIVENESS_STALE_MS = 45_000;
 const MAX_ACK_DELIVERY_IDS = 500;
 const dashboardSessions = new Map<string, number>();
@@ -1005,5 +1007,17 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
   server.listen(port, "127.0.0.1", () => {
     console.log(`Walkie-Talkie Hub listening on http://localhost:${port}`);
   });
+
+  // Periodically check the coupled in-memory invariants. It runs between ticks
+  // (never inside a synchronous mutation), so it cannot observe a half-applied
+  // change. By default a violation is only logged and counted (safe for
+  // production); under an explicit dev opt-in (NODE_ENV=development or
+  // WALKIE_TALKIE_STRICT_INVARIANTS=1) it throws loudly. unref() so the timer
+  // never keeps the process (or a test run) alive, and clear it on close so
+  // nothing leaks between test cases.
+  const invariantTimer = setInterval(() => assertInvariants("periodic check"), INVARIANT_CHECK_INTERVAL_MS);
+  invariantTimer.unref();
+  server.on("close", () => clearInterval(invariantTimer));
+
   return server;
 }
