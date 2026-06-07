@@ -1004,8 +1004,11 @@ export function createHubServer(port: number, adminToken: string, joinToken: str
     }
     throw err;
   });
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`Walkie-Talkie Hub listening on http://localhost:${port}`);
+  // Defaults to loopback-only. Set HOST (e.g. 0.0.0.0 or a Tailscale IP) to
+  // expose the Hub to other machines on a trusted network.
+  const host = process.env.HOST ?? "127.0.0.1";
+  server.listen(port, host, () => {
+    console.log(`Walkie-Talkie Hub listening on http://${host}:${port}`);
   });
 
   // Periodically check the coupled in-memory invariants. It runs between ticks
